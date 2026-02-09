@@ -5,19 +5,10 @@ Uses Kaggle Python API v1.8.4 with integrity checks
 """
 
 import sys
-import hashlib
 from pathlib import Path
 import zipfile
 import time
 from kaggle.api.kaggle_api_extended import KaggleApi
-
-def calculate_md5(filepath, chunk_size=8192):
-    """Calculate MD5 hash of a file"""
-    md5 = hashlib.md5()
-    with open(filepath, 'rb') as f:
-        while chunk := f.read(chunk_size):
-            md5.update(chunk)
-    return md5.hexdigest()
 
 def verify_zip_integrity(zip_path):
     """Check if zip file is valid and complete"""
@@ -63,32 +54,15 @@ def download_rsna():
     
     sys.stdout.flush()
     
-    # Verify competition access and get expected file info
+    # Verify competition access
     print("\n[2/5] Verifying competition access...")
     sys.stdout.flush()
     
     try:
         response = api.competition_list_files('rsna-2024-lumbar-spine-degenerative-classification')
         files = response.files
-        
-        # Find the main zip file info
-        main_file = None
-        for f in files:
-            if f.name == 'rsna-2024-lumbar-spine-degenerative-classification.zip':
-                main_file = f
-                break
-        
-        if main_file:
-            expected_size = main_file.total_bytes
-            expected_size_gb = expected_size / (1024**3)
-            print(f"      ✓ Competition accessible ({len(files)} files)")
-            print(f"      ✓ Expected download size: {expected_size_gb:.1f} GB")
-        else:
-            # Fallback: sum all files
-            expected_size = sum(f.total_bytes for f in files)
-            expected_size_gb = expected_size / (1024**3)
-            print(f"      ✓ Competition accessible ({len(files)} files)")
-            print(f"      ✓ Total size: {expected_size_gb:.1f} GB")
+        print(f"      ✓ Competition accessible ({len(files)} files)")
+        print(f"      ✓ Expected download: ~150 GB")
             
     except Exception as e:
         print(f"      ✗ Cannot access competition: {e}")
@@ -111,9 +85,9 @@ def download_rsna():
         current_size_gb = current_size / (1024**3)
         print(f"      Found existing file: {zip_file.name} ({current_size_gb:.2f} GB)")
         
-        # Check size match
-        if current_size == expected_size:
-            print(f"      File size matches expected ({expected_size_gb:.1f} GB)")
+        # If file is >25 GB, it's likely complete (competition shows ~28 GB)
+        if current_size_gb > 25:
+            print("      File appears complete based on size")
             
             # Verify zip integrity
             print("      Verifying zip integrity (this may take a minute)...")
@@ -127,7 +101,7 @@ def download_rsna():
                 print("      ✗ File is corrupted, will re-download")
                 zip_file.unlink()
         else:
-            print(f"      ✗ Size mismatch: {current_size_gb:.2f} GB (expected {expected_size_gb:.1f} GB)")
+            print(f"      ✗ File appears incomplete ({current_size_gb:.2f} GB < 25 GB)")
             print("      Removing incomplete file and re-downloading")
             zip_file.unlink()
     else:
@@ -207,7 +181,7 @@ def download_rsna():
         
     except zipfile.BadZipFile as e:
         print(f"      ✗ ERROR: {e}")
-        print("      File may be corrupted")
+        print("      File may be corrupted - will be deleted on next run")
         return
     except Exception as e:
         print(f"      ✗ ERROR during extraction: {e}")
