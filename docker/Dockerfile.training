@@ -1,0 +1,82 @@
+FROM nvcr.io/nvidia/pytorch:24.01-py3
+
+LABEL maintainer="go2432@wayne.edu"
+LABEL description="Training container for spine level identification"
+LABEL version="1.0"
+
+# Set working directory
+WORKDIR /workspace
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    git \
+    vim \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# Install PyTorch (already in base, but ensure correct version)
+RUN pip install --no-cache-dir \
+    torch==2.1.2 \
+    torchvision==0.16.2 \
+    torchaudio==2.1.2
+
+# Install medical imaging libraries
+RUN pip install --no-cache-dir \
+    monai[all]==1.3.0 \
+    nibabel==5.1.0 \
+    SimpleITK==2.3.1 \
+    pydicom==2.4.4 \
+    dicom2nifti==2.4.10
+
+# Install YOLOv8 and detection libraries
+RUN pip install --no-cache-dir \
+    ultralytics==8.1.0 \
+    opencv-python==4.8.1.78 \
+    albumentations==1.3.1
+
+# Install scientific computing
+RUN pip install --no-cache-dir \
+    numpy==1.24.3 \
+    scipy==1.11.4 \
+    pandas==2.1.4 \
+    scikit-learn==1.3.2 \
+    scikit-image==0.22.0
+
+# Install visualization
+RUN pip install --no-cache-dir \
+    matplotlib==3.8.2 \
+    seaborn==0.13.0 \
+    plotly==5.18.0 \
+    tensorboard==2.15.1
+
+# Install ML tools
+RUN pip install --no-cache-dir \
+    wandb==0.16.1 \
+    pytorch-lightning==2.1.3 \
+    torchmetrics==1.2.1
+
+# Install utilities
+RUN pip install --no-cache-dir \
+    tqdm==4.66.1 \
+    pyyaml==6.0.1 \
+    h5py==3.10.0 \
+    pillow==10.1.0
+
+# Create necessary directories
+RUN mkdir -p /data /models /results
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV TORCH_HOME=/opt/torch
+ENV CUDA_HOME=/usr/local/cuda
+
+# Default command
+CMD ["/bin/bash"]

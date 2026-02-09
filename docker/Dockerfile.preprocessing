@@ -1,0 +1,58 @@
+FROM python:3.10-slim
+
+LABEL maintainer="go2432@wayne.edu"
+LABEL description="Preprocessing container for DICOM/NIfTI handling"
+LABEL version="1.0"
+
+# Set working directory
+WORKDIR /workspace
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    git \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    dcmtk \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip
+RUN pip install --upgrade pip setuptools wheel
+
+# Install medical imaging libraries
+RUN pip install --no-cache-dir \
+    nibabel==5.1.0 \
+    SimpleITK==2.3.1 \
+    pydicom==2.4.4 \
+    dicom2nifti==2.4.10 \
+    dicom-numpy==0.6.3
+
+# Install data processing
+RUN pip install --no-cache-dir \
+    numpy==1.24.3 \
+    pandas==2.1.4 \
+    scipy==1.11.4 \
+    h5py==3.10.0 \
+    pillow==10.1.0
+
+# Install image processing
+RUN pip install --no-cache-dir \
+    opencv-python-headless==4.8.1.78 \
+    scikit-image==0.22.0
+
+# Install utilities
+RUN pip install --no-cache-dir \
+    tqdm==4.66.1 \
+    pyyaml==6.0.1 \
+    kaggle==1.6.0
+
+# Create necessary directories
+RUN mkdir -p /data /results
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+
+# Default command
+CMD ["/bin/bash"]

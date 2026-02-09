@@ -1,0 +1,49 @@
+# Data
+data/raw/*
+data/processed/*
+data/annotations/*
+!data/*/.gitkeep
+
+# Models
+models/checkpoints/*.pt
+models/checkpoints/*.pth
+!models/checkpoints/.gitkeep
+
+# Results
+results/*
+!results/.gitkeep
+
+# Logs
+logs/*.out
+logs/*.err
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# Environment
+.env
+venv/
+ENV/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Singularity
+*.sif
+singularity_cache/
+
+# Temporary
+tmp/
+temp/
+*.tmp
