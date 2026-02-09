@@ -21,9 +21,26 @@ echo "Start time: $(date)"
 echo "================================================================"
 
 # Setup environment
+# 1. SETUP - Conda environment with Nextflow (for Singularity)
+export CONDA_PREFIX="${HOME}/mambaforge/envs/nextflow"
+export PATH="${CONDA_PREFIX}/bin:$PATH"
+unset JAVA_HOME
+
+# Verify singularity available
+which singularity || echo "WARNING: singularity not found in PATH"
+
+# 2. CACHE - Singularity cache directories
 export XDG_RUNTIME_DIR="${HOME}/xdr"
 export NXF_SINGULARITY_CACHEDIR="${HOME}/singularity_cache"
 mkdir -p $XDG_RUNTIME_DIR $NXF_SINGULARITY_CACHEDIR
+
+# 3. SAFETY - Clean environment
+export NXF_SINGULARITY_HOME_MOUNT=true
+unset LD_LIBRARY_PATH
+unset PYTHONPATH
+unset R_LIBS
+unset R_LIBS_USER
+unset R_LIBS_SITE
 
 # Project directories
 PROJECT_DIR="$(pwd)"
