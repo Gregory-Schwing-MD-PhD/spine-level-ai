@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 LABEL maintainer="go2432@wayne.edu"
 LABEL description="Preprocessing container for DICOM/NIfTI handling"
@@ -42,7 +42,7 @@ RUN pip install --no-cache-dir \
     opencv-python-headless==4.8.1.78 \
     scikit-image==0.22.0
 
-# Install utilities
+# Install utilities with latest kaggle
 RUN pip install --no-cache-dir \
     tqdm==4.66.1 \
     pyyaml==6.0.1 \
