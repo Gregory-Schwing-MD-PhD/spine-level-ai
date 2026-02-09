@@ -46,7 +46,7 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir \
     tqdm==4.66.1 \
     pyyaml==6.0.1 \
-    kaggle==1.6.0
+    kaggle==1.8.4
 
 # Create necessary directories
 RUN mkdir -p /data /results
