@@ -1,57 +1,40 @@
 #!/usr/bin/env python3
 """
 RSNA 2024 Dataset Download Script
-Uses Kaggle Python API v1.8.4 with progress monitoring
+Uses Kaggle Python API v1.8.4 with integrity checks
 """
 
 import sys
-import os
+import hashlib
 from pathlib import Path
 import zipfile
 import time
-import threading
 from kaggle.api.kaggle_api_extended import KaggleApi
 
-def monitor_download(zip_path, stop_event):
-    """Monitor download progress by watching file size"""
-    print("\n" + "="*60)
-    print("DOWNLOAD PROGRESS")
-    print("="*60)
-    sys.stdout.flush()
-    
-    last_size = 0
-    start_time = time.time()
-    stall_count = 0
-    expected_total_gb = 28.2
-    
-    while not stop_event.is_set():
-        if zip_path.exists():
-            current_size = zip_path.stat().st_size
-            size_gb = current_size / (1024**3)
-            elapsed = time.time() - start_time
-            
-            if elapsed > 0:
-                speed_mb = (current_size / (1024**2)) / elapsed
-                
-                if current_size > last_size:
-                    percent = (size_gb / expected_total_gb) * 100
-                    remaining_gb = expected_total_gb - size_gb
-                    eta_seconds = (remaining_gb * 1024) / speed_mb if speed_mb > 0 else 0
-                    
-                    print(f"[{percent:5.1f}%] {size_gb:6.2f} / {expected_total_gb:.1f} GB | "
-                          f"{speed_mb:6.2f} MB/s | ETA: {eta_seconds/60:5.1f} min", 
-                          flush=True)
-                    stall_count = 0
-                else:
-                    stall_count += 1
-                    if stall_count < 6:  # Only show first few stalls
-                        print(f"[{size_gb:6.2f} GB] Waiting... ({stall_count})", flush=True)
-            
-            last_size = current_size
-        else:
-            print("Waiting for download to start...", flush=True)
-        
-        time.sleep(10)  # Update every 10 seconds
+def calculate_md5(filepath, chunk_size=8192):
+    """Calculate MD5 hash of a file"""
+    md5 = hashlib.md5()
+    with open(filepath, 'rb') as f:
+        while chunk := f.read(chunk_size):
+            md5.update(chunk)
+    return md5.hexdigest()
+
+def verify_zip_integrity(zip_path):
+    """Check if zip file is valid and complete"""
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            # testzip() returns None if all files are OK
+            bad_file = z.testzip()
+            if bad_file is not None:
+                print(f"      Corrupted file in archive: {bad_file}")
+                return False
+            return True
+    except zipfile.BadZipFile:
+        print("      File is not a valid zip")
+        return False
+    except Exception as e:
+        print(f"      Error checking zip: {e}")
+        return False
 
 def download_rsna():
     """Download RSNA 2024 dataset using Kaggle Python API"""
@@ -63,12 +46,11 @@ def download_rsna():
     print("RSNA 2024 LUMBAR SPINE DATASET DOWNLOAD")
     print("="*60)
     print(f"Target: {data_dir}")
-    print(f"Expected size: ~150 GB")
     print("="*60)
     sys.stdout.flush()
     
     # Initialize Kaggle API
-    print("\n[1/4] Authenticating with Kaggle...")
+    print("\n[1/5] Authenticating with Kaggle...")
     sys.stdout.flush()
     
     try:
@@ -81,13 +63,33 @@ def download_rsna():
     
     sys.stdout.flush()
     
-    # Verify competition access
-    print("\n[2/4] Verifying competition access...")
+    # Verify competition access and get expected file info
+    print("\n[2/5] Verifying competition access...")
     sys.stdout.flush()
     
     try:
-        files = api.competition_list_files('rsna-2024-lumbar-spine-degenerative-classification')
-        print(f"      ✓ Competition accessible ({len(files)} files)")
+        response = api.competition_list_files('rsna-2024-lumbar-spine-degenerative-classification')
+        files = response.files
+        
+        # Find the main zip file info
+        main_file = None
+        for f in files:
+            if f.name == 'rsna-2024-lumbar-spine-degenerative-classification.zip':
+                main_file = f
+                break
+        
+        if main_file:
+            expected_size = main_file.total_bytes
+            expected_size_gb = expected_size / (1024**3)
+            print(f"      ✓ Competition accessible ({len(files)} files)")
+            print(f"      ✓ Expected download size: {expected_size_gb:.1f} GB")
+        else:
+            # Fallback: sum all files
+            expected_size = sum(f.total_bytes for f in files)
+            expected_size_gb = expected_size / (1024**3)
+            print(f"      ✓ Competition accessible ({len(files)} files)")
+            print(f"      ✓ Total size: {expected_size_gb:.1f} GB")
+            
     except Exception as e:
         print(f"      ✗ Cannot access competition: {e}")
         print("\n      SOLUTION: Accept rules at:")
@@ -96,46 +98,70 @@ def download_rsna():
     
     sys.stdout.flush()
     
-    # Start download with monitoring
-    print("\n[3/4] Starting download...")
-    print("      This will take several hours for ~150 GB")
-    sys.stdout.flush()
-    
+    # Check if file already exists
     zip_file = data_dir / "rsna-2024-lumbar-spine-degenerative-classification.zip"
     
-    # Start monitor thread
-    stop_monitor = threading.Event()
-    monitor_thread = threading.Thread(
-        target=monitor_download,
-        args=(zip_file, stop_monitor),
-        daemon=True
-    )
-    monitor_thread.start()
-    
-    # Download (this blocks until complete)
-    try:
-        api.competition_download_files(
-            competition='rsna-2024-lumbar-spine-degenerative-classification',
-            path=str(data_dir),
-            quiet=True  # Suppress API's own output
-        )
-    except Exception as e:
-        stop_monitor.set()
-        monitor_thread.join(timeout=2)
-        print(f"\n      ✗ Download failed: {e}")
-        return
-    
-    # Stop monitor
-    stop_monitor.set()
-    monitor_thread.join(timeout=2)
-    
-    print("\n" + "="*60)
-    print("      ✓ Download complete!")
-    print("="*60)
+    print("\n[3/5] Checking existing files...")
     sys.stdout.flush()
     
+    download_needed = True
+    
+    if zip_file.exists():
+        current_size = zip_file.stat().st_size
+        current_size_gb = current_size / (1024**3)
+        print(f"      Found existing file: {zip_file.name} ({current_size_gb:.2f} GB)")
+        
+        # Check size match
+        if current_size == expected_size:
+            print(f"      File size matches expected ({expected_size_gb:.1f} GB)")
+            
+            # Verify zip integrity
+            print("      Verifying zip integrity (this may take a minute)...")
+            sys.stdout.flush()
+            
+            if verify_zip_integrity(zip_file):
+                print("      ✓ File is complete and valid!")
+                print("      Skipping download.")
+                download_needed = False
+            else:
+                print("      ✗ File is corrupted, will re-download")
+                zip_file.unlink()
+        else:
+            print(f"      ✗ Size mismatch: {current_size_gb:.2f} GB (expected {expected_size_gb:.1f} GB)")
+            print("      Removing incomplete file and re-downloading")
+            zip_file.unlink()
+    else:
+        print("      No existing file found")
+    
+    sys.stdout.flush()
+    
+    # Download if needed
+    if download_needed:
+        print("\n[4/5] Starting download...")
+        print(f"      Progress will appear in the error log (.err file)")
+        sys.stdout.flush()
+        
+        try:
+            api.competition_download_files(
+                competition='rsna-2024-lumbar-spine-degenerative-classification',
+                path=str(data_dir),
+                quiet=False,
+                force=True  # Force re-download to overwrite any partial files
+            )
+        except Exception as e:
+            print(f"\n      ✗ Download failed: {e}")
+            return
+        
+        print("\n" + "="*60)
+        print("      ✓ Download complete!")
+        print("="*60)
+        sys.stdout.flush()
+    else:
+        print("\n[4/5] Download skipped (file already verified)")
+        sys.stdout.flush()
+    
     # Extract
-    print("\n[4/4] Extracting archive...")
+    print("\n[5/5] Extracting archive...")
     sys.stdout.flush()
     
     if not zip_file.exists():
@@ -162,7 +188,6 @@ def download_rsna():
             for i, member in enumerate(members, 1):
                 z.extract(member, data_dir)
                 
-                # Progress every 500 files
                 if i % 500 == 0 or i == total:
                     elapsed = time.time() - start_time
                     rate = i / elapsed if elapsed > 0 else 0
