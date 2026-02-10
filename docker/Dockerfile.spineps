@@ -1,10 +1,9 @@
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-devel
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 
 LABEL maintainer="go2432@wayne.edu"
 LABEL description="SPINEPS LSTV screening container"
 LABEL version="1.0"
 
-# Set working directory
 WORKDIR /app
 
 # Install system dependencies
@@ -16,31 +15,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages
+# Install Python packages in one layer
 RUN pip install --no-cache-dir \
     pydicom==2.4.4 \
     nibabel==5.1.0 \
     dicom2nifti==2.4.10 \
-    opencv-python==4.8.1.78 \
+    opencv-python-headless==4.8.1.78 \
     roboflow==1.1.9 \
     tqdm==4.66.1 \
     pandas==2.1.4 \
-    Pillow==10.1.0
-
-# Clone and install SPINEPS
-RUN git clone https://github.com/Hendrik-code/spineps.git /app/spineps && \
-    cd /app/spineps && \
-    pip install -e .
+    Pillow==10.1.0 \
+    git+https://github.com/Hendrik-code/spineps.git
 
 # Set SPINEPS model directory
 ENV SPINEPS_SEGMENTOR_MODELS=/app/models
-RUN mkdir -p /app/models
+RUN mkdir -p /app/models /app/data /app/output
 
-# Create necessary directories
-RUN mkdir -p /app/data /app/output
-
-# Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Default command
 CMD ["/bin/bash"]
