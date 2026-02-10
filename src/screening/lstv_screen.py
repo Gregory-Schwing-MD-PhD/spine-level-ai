@@ -109,49 +109,62 @@ def convert_dicom_to_nifti(dicom_dir, output_path):
 
 def run_spineps_inference(nifti_path, output_dir):
     """
-    Run SPINEPS segmentation on NIfTI volume
-    
-    NOTE: This assumes SPINEPS CLI exists. If it's Python-only, adjust to:
-    from spineps.seg_run import process_img_nii
+    Run SPINEPS segmentation on NIfTI volume using the CLI
     """
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-        seg_output = output_dir / f"{nifti_path.stem}_seg.nii.gz"
         
-        # Method 1: Try CLI first
+        # SPINEPS creates a derivatives folder next to the input
+        # We'll specify a custom derivative name
+        derivative_name = "spineps_output"
+        
+        # Run SPINEPS CLI
         cmd = [
             'spineps',
-            'segment',
-            str(nifti_path),
-            '-o', str(seg_output),
+            'sample',
+            '-i', str(nifti_path),
+            '-model_semantic', 't2w',  # For T2w sagittal images
+            '-model_instance', 'instance',
+            '-model_labeling', 't2w_labeling',  # VERIDAH labeling
+            '-der_name', derivative_name,
+            '-override_semantic',
+            '-override_instance',
+            '-override_ctd',
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        print(f"    Running: {' '.join(cmd)}")
+        sys.stdout.flush()
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         
         if result.returncode != 0:
-            print(f"  ✗ SPINEPS CLI failed, trying Python API...")
-            
-            # Method 2: Fall back to Python API
-            try:
-                from spineps.seg_run import process_img_nii
-                
-                process_img_nii(
-                    img_path=str(nifti_path),
-                    derivative_name=str(seg_output),
-                    verbose=False
-                )
-            except Exception as py_error:
-                print(f"  ✗ SPINEPS Python API also failed: {py_error}")
-                return None
-        
-        if not seg_output.exists():
-            print(f"  ✗ Segmentation output not found")
+            print(f"  ✗ SPINEPS failed: {result.stderr}")
             return None
+        
+        # SPINEPS creates output in: <input_dir>/<derivative_name>/
+        input_parent = nifti_path.parent
+        seg_dir = input_parent / derivative_name
+        
+        # Find the instance segmentation output (seg-vert)
+        seg_vert_files = list(seg_dir.glob("*_seg-vert_msk.nii.gz"))
+        
+        if not seg_vert_files:
+            print(f"  ✗ SPINEPS output not found in {seg_dir}")
+            # Try to list what's actually there
+            if seg_dir.exists():
+                print(f"    Contents: {list(seg_dir.glob('*'))}")
+            return None
+        
+        # Copy to our output directory
+        seg_output = output_dir / f"{nifti_path.stem}_seg.nii.gz"
+        shutil.copy(seg_vert_files[0], seg_output)
+        
+        print(f"  ✓ Segmentation saved to {seg_output}")
         
         return seg_output
         
     except subprocess.TimeoutExpired:
-        print(f"  ✗ SPINEPS timeout (>5min)")
+        print(f"  ✗ SPINEPS timeout (>10min)")
         return None
     except Exception as e:
         print(f"  ✗ SPINEPS error: {e}")
@@ -162,38 +175,33 @@ def analyze_segmentation(seg_path):
     """
     Analyze SPINEPS segmentation for LSTV indicators
     
-    SPINEPS label scheme (from their documentation):
-    - Vertebrae are labeled sequentially
-    - Need to verify exact label numbers
+    SPINEPS vertebra instance labels:
+    - Labels 1-25: Individual vertebrae (C1-L6)
+    - Labels 100+X: IVD below vertebra X
+    - Labels 200+X: Endplate of vertebra X
+    - Label 26: Sacrum
     """
     try:
         # Load segmentation
         seg_nii = nib.load(seg_path)
         seg_data = seg_nii.get_fdata().astype(int)
         
-        # Get unique labels
+        # Get unique vertebra labels (1-25)
         unique_labels = np.unique(seg_data)
-        unique_labels = unique_labels[unique_labels > 0]  # Remove background
+        vertebra_labels = [l for l in unique_labels if 1 <= l <= 25]
         
-        # HEURISTIC: Count distinct vertebral bodies
-        # In a normal lumbar scan: should see 5 lumbar vertebrae (L1-L5)
-        # LSTV cases: may see 4, 6, or anomalous spacing
+        # Count lumbar vertebrae (L1-L6 are labels 20-25 in SPINEPS)
+        lumbar_labels = [l for l in vertebra_labels if 20 <= l <= 25]
+        vertebra_count = len(lumbar_labels)
         
-        # Filter to vertebral labels (typically in a certain range)
-        # This is a GUESS - needs verification from SPINEPS docs
-        vertebra_labels = unique_labels  # Adjust this filter
-        vertebra_count = len(vertebra_labels)
+        # Check for sacrum
+        has_sacrum = 26 in unique_labels
         
-        # Check for sacrum presence (typically the caudal-most structure)
-        has_sacrum = len(unique_labels) > 0  # Placeholder
-        
-        # Calculate inter-vertebral spacing
+        # Check for fusion: look at spacing between adjacent vertebrae
         fusion_detected = False
-        if len(vertebra_labels) >= 2:
-            # Get masks of last two vertebrae
-            sorted_labels = sorted(vertebra_labels)
+        if len(lumbar_labels) >= 2:
+            sorted_labels = sorted(lumbar_labels)
             
-            # Check all adjacent pairs for abnormal spacing
             for i in range(len(sorted_labels) - 1):
                 curr_label = sorted_labels[i]
                 next_label = sorted_labels[i + 1]
@@ -201,7 +209,7 @@ def analyze_segmentation(seg_path):
                 curr_mask = (seg_data == curr_label)
                 next_mask = (seg_data == next_label)
                 
-                if curr_mask.sum() > 100 and next_mask.sum() > 100:  # Ensure real structures
+                if curr_mask.sum() > 100 and next_mask.sum() > 100:
                     # Calculate centroids
                     curr_centroid = np.array(np.where(curr_mask)).mean(axis=1)
                     next_centroid = np.array(np.where(next_mask)).mean(axis=1)
@@ -211,7 +219,7 @@ def analyze_segmentation(seg_path):
                     
                     # Get voxel spacing
                     spacing = seg_nii.header.get_zooms()
-                    physical_distance = distance * np.mean(spacing)  # Average spacing
+                    physical_distance = distance * np.mean(spacing)
                     
                     # If distance is very small (<5mm), possible fusion
                     if physical_distance < 5:
@@ -219,7 +227,8 @@ def analyze_segmentation(seg_path):
                         break
         
         # Flag if abnormal count or fusion
-        # Standard is 5 lumbar vertebrae (L1-L5)
+        # Normal: 5 lumbar vertebrae (L1-L5)
+        # LSTV: 4 (sacralization) or 6 (lumbarization)
         is_lstv_candidate = (vertebra_count < 4 or vertebra_count > 6) or fusion_detected
         
         result = {
@@ -228,6 +237,7 @@ def analyze_segmentation(seg_path):
             'fusion_detected': fusion_detected,
             'is_lstv_candidate': is_lstv_candidate,
             'unique_labels': list(map(int, unique_labels)),
+            'lumbar_labels': list(map(int, lumbar_labels)),
         }
         
         return result
@@ -297,7 +307,6 @@ def upload_to_roboflow(image_path, study_id, roboflow_key, workspace, project):
         
     except Exception as e:
         print(f"  ⚠ Roboflow upload error: {e}")
-        # Don't crash on upload failures
         return False
 
 def load_progress(progress_file):
@@ -455,13 +464,15 @@ def main():
                 'has_sacrum': analysis['has_sacrum'],
                 'fusion_detected': analysis['fusion_detected'],
                 'is_lstv_candidate': analysis['is_lstv_candidate'],
-                'unique_labels': str(analysis['unique_labels'])
+                'unique_labels': str(analysis['unique_labels']),
+                'lumbar_labels': str(analysis['lumbar_labels']),
             }
             
             # If LSTV candidate, upload to Roboflow
             if analysis['is_lstv_candidate']:
                 print(f"  🚩 LSTV CANDIDATE DETECTED!")
                 print(f"     Vertebra count: {analysis['vertebra_count']}")
+                print(f"     Lumbar labels: {analysis['lumbar_labels']}")
                 print(f"     Fusion: {analysis['fusion_detected']}")
                 sys.stdout.flush()
                 
@@ -484,7 +495,7 @@ def main():
                     else:
                         print(f"  ⚠ Roboflow upload failed (continuing)")
             else:
-                print(f"  ✓ Normal (count={analysis['vertebra_count']})")
+                print(f"  ✓ Normal (count={analysis['vertebra_count']}, labels={analysis['lumbar_labels']})")
             
             sys.stdout.flush()
             
