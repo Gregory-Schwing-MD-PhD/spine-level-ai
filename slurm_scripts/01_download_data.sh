@@ -44,97 +44,57 @@ unset R_LIBS_SITE
 # Project directories
 PROJECT_DIR="$(pwd)"
 DATA_DIR="${PROJECT_DIR}/data/raw"
+mkdir -p "$DATA_DIR"
 
 # Docker container (will be auto-converted to Singularity)
-DOCKER_USERNAME="go2432"  # Change to your Docker Hub username
+DOCKER_USERNAME="go2432"
 CONTAINER="docker://${DOCKER_USERNAME}/spine-level-ai-preprocessing:latest"
+IMG_PATH="${NXF_SINGULARITY_CACHEDIR}/spine-level-ai-preprocessing.sif"
 
 # Check for Kaggle credentials
 KAGGLE_JSON="${HOME}/.kaggle/kaggle.json"
 if [[ ! -f "$KAGGLE_JSON" ]]; then
     echo "ERROR: Kaggle credentials not found at $KAGGLE_JSON"
-    echo "Please follow these steps:"
-    echo "1. Go to https://www.kaggle.com/settings/account"
-    echo "2. Click 'Create New Token'"
-    echo "3. Move kaggle.json to ~/.kaggle/"
-    echo "4. chmod 600 ~/.kaggle/kaggle.json"
     exit 1
 fi
 
 echo "Kaggle credentials found: $KAGGLE_JSON"
 
-# Create download script
-cat > ${PROJECT_DIR}/tmp_download.py << 'PYEOF'
-import os
-import subprocess
-from pathlib import Path
+# Pull/convert container if not exists
+if [[ ! -f "$IMG_PATH" ]]; then
+    echo "Pulling and converting Docker container to Singularity..."
+    singularity pull "$IMG_PATH" "$CONTAINER"
+fi
 
-def download_rsna():
-    """Download RSNA 2024 dataset using Kaggle API"""
-    
-    data_dir = Path("/data/raw")
-    data_dir.mkdir(parents=True, exist_ok=True)
-    
-    print("Downloading RSNA 2024 Lumbar Spine dataset...")
-    print("This is ~150GB and will take several hours.")
-    
-    # Download using kaggle CLI
-    cmd = [
-        "kaggle", "competitions", "download",
-        "-c", "rsna-2024-lumbar-spine-degenerative-classification",
-        "-p", str(data_dir)
-    ]
-    
-    subprocess.run(cmd, check=True)
-    
-    print("\nDownload complete!")
-    print("Extracting archives...")
-    
-    # Extract zip files
-    import zipfile
-    zip_files = list(data_dir.glob("*.zip"))
-    
-    for zip_file in zip_files:
-        print(f"Extracting {zip_file.name}...")
-        with zipfile.ZipFile(zip_file, 'r') as zip_ref:
-            zip_ref.extractall(data_dir)
-        
-        # Remove zip after extraction to save space
-        zip_file.unlink()
-        print(f"  ✓ Extracted and removed {zip_file.name}")
-    
-    print("\nAll done!")
+echo "Container ready: $IMG_PATH"
 
-if __name__ == "__main__":
-    download_rsna()
-PYEOF
+# Copy Kaggle credentials into work directory
+mkdir -p ${PROJECT_DIR}/.kaggle_tmp
+cp ${HOME}/.kaggle/kaggle.json ${PROJECT_DIR}/.kaggle_tmp/
+chmod 600 ${PROJECT_DIR}/.kaggle_tmp/kaggle.json
 
-# Run download in Singularity container (auto-converts from Docker)
-echo "Starting download with Singularity (Docker container)..."
-echo "Container: $CONTAINER"
-
+# Run the Python download script
 singularity exec \
     --bind $PROJECT_DIR:/work \
     --bind $DATA_DIR:/data/raw \
-    --bind $HOME/.kaggle:/root/.kaggle:ro \
+    --bind ${PROJECT_DIR}/.kaggle_tmp:/root/.kaggle \
     --pwd /work \
-    "$CONTAINER" \
-    python tmp_download.py
+    "$IMG_PATH" \
+    python /work/download_rsna_dataset.py
+
+exit_code=$?
 
 # Cleanup
-rm -f ${PROJECT_DIR}/tmp_download.py
+rm -rf ${PROJECT_DIR}/.kaggle_tmp
+
+if [ $exit_code -ne 0 ]; then
+    echo "ERROR: Download failed"
+    exit $exit_code
+fi
 
 echo "================================================================"
 echo "Download complete!"
 echo "End time: $(date)"
-echo "Data location: $DATA_DIR"
 echo "================================================================"
-
-# Create dataset summary
-echo "Creating dataset summary..."
-singularity exec \
-    --bind $DATA_DIR:/data/raw \
-    "$CONTAINER" \
-    bash -c "ls -lh /data/raw && du -sh /data/raw"
 
 echo "DONE."
