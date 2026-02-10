@@ -64,20 +64,21 @@ def convert_dicom_to_nifti(dicom_dir, output_path):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Extract study_id from output path
-        # output_path is like: nifti/sub-100206310_T2w.nii.gz
-        study_id = output_path.stem.replace('_T2w', '').replace('sub-', '')
+        # output_path should be: nifti/sub-100206310_T2w.nii.gz
+        study_id = output_path.stem.replace('_T2w', '').replace('.nii', '').replace('sub-', '')
         
-        # SPINEPS expects BIDS format: sub-{id}_T2w.nii.gz
-        bids_name = f"sub-{study_id}_T2w"
-        final_output = output_path.parent / f"{bids_name}.nii.gz"
+        # SPINEPS expects BIDS format: sub-{id}_T2w
+        # BUT dcm2niix adds .nii automatically, so we give it: sub-{id}_T2w
+        # Result will be: sub-{id}_T2w.nii.gz (perfect!)
+        bids_base = f"sub-{study_id}_T2w"  # NO .nii extension here!
         
         cmd = [
             'dcm2niix',
-            '-z', 'y',
-            '-f', bids_name,  # Use BIDS-compliant name
+            '-z', 'y',  # Compress
+            '-f', bids_base,  # Filename WITHOUT .nii extension
             '-o', str(output_path.parent),
-            '-m', 'y',
-            '-b', 'n',
+            '-m', 'y',  # Merge
+            '-b', 'n',  # No JSON
             str(dicom_dir)
         ]
         
@@ -87,22 +88,26 @@ def convert_dicom_to_nifti(dicom_dir, output_path):
             print(f"  ✗ dcm2niix failed: {result.stderr[:200]}")
             return None
         
-        # Find the generated file (dcm2niix might add suffixes)
-        nifti_files = sorted(output_path.parent.glob(f"{bids_name}*.nii.gz"))
+        # dcm2niix creates: sub-{id}_T2w.nii.gz (exactly what we want!)
+        expected_output = output_path.parent / f"{bids_base}.nii.gz"
         
-        if not nifti_files:
-            print(f"  ✗ No NIfTI generated")
-            return None
+        if not expected_output.exists():
+            # Try to find with suffixes
+            nifti_files = sorted(output_path.parent.glob(f"{bids_base}*.nii.gz"))
+            
+            if not nifti_files:
+                print(f"  ✗ No NIfTI generated")
+                print(f"    Expected: {expected_output}")
+                return None
+            
+            # Take first file and rename if needed
+            generated_file = nifti_files[0]
+            if generated_file != expected_output:
+                if expected_output.exists():
+                    expected_output.unlink()
+                shutil.move(str(generated_file), str(expected_output))
         
-        generated_file = nifti_files[0]
-        
-        # Ensure it has the exact name we want
-        if generated_file != final_output:
-            if final_output.exists():
-                final_output.unlink()
-            shutil.move(str(generated_file), str(final_output))
-        
-        return final_output
+        return expected_output
         
     except subprocess.TimeoutExpired:
         print(f"  ✗ Conversion timeout")
@@ -129,17 +134,10 @@ def run_spineps_inference(nifti_path, output_dir):
             '-override_ctd',
         ]
         
-        print(f"    Command: {' '.join(cmd)}")
+        print(f"    Running SPINEPS...")
         sys.stdout.flush()
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        
-        # Show output for debugging
-        if result.stdout:
-            print(f"    SPINEPS output:")
-            for line in result.stdout.split('\n')[:20]:
-                if line.strip():
-                    print(f"      {line}")
         
         if result.returncode != 0:
             print(f"  ✗ SPINEPS failed (code {result.returncode})")
@@ -147,43 +145,40 @@ def run_spineps_inference(nifti_path, output_dir):
                 print(f"    Error: {result.stderr[:500]}")
             return None
         
-        # Find output
+        # SPINEPS creates output NEXT TO the input file
+        # Structure: /data/output/nifti/derivatives_seg/
         input_parent = nifti_path.parent
         derivatives_base = input_parent / "derivatives_seg"
         
         if not derivatives_base.exists():
-            print(f"  ✗ derivatives_seg not found at {derivatives_base}")
-            print(f"    Parent contents:")
-            for item in sorted(input_parent.iterdir())[:10]:
-                print(f"      - {item.name}")
+            print(f"  ✗ derivatives_seg not found")
             return None
         
-        # Find subject directory
-        subject_dirs = [d for d in derivatives_base.iterdir() if d.is_dir() and d.name.startswith('sub-')]
+        # Extract study_id from input
+        study_id = nifti_path.stem.replace('_T2w', '').replace('.nii', '').replace('sub-', '')
         
-        if not subject_dirs:
-            print(f"  ✗ No sub-* directory")
-            print(f"    Contents:")
-            for item in sorted(derivatives_base.iterdir())[:10]:
-                print(f"      - {item.name}")
-            return None
+        # SPINEPS creates files directly in derivatives_seg (flat structure)
+        # File pattern: sub-{id}_mod-T2w_seg-vert_msk.nii.gz
+        seg_pattern = f"sub-{study_id}_mod-T2w_seg-vert_msk.nii.gz"
+        seg_file = derivatives_base / seg_pattern
         
-        seg_dir = subject_dirs[0]
-        seg_files = list(seg_dir.glob("*_seg-vert_msk.nii.gz"))
+        if not seg_file.exists():
+            # Try to find any seg-vert file
+            seg_files = list(derivatives_base.glob("*_seg-vert_msk.nii.gz"))
+            
+            if not seg_files:
+                print(f"  ✗ No segmentation file found")
+                print(f"    Expected: {seg_pattern}")
+                print(f"    Contents:")
+                for item in sorted(derivatives_base.iterdir())[:10]:
+                    print(f"      - {item.name}")
+                return None
+            
+            seg_file = seg_files[0]
         
-        if not seg_files:
-            print(f"  ✗ No *_seg-vert_msk.nii.gz found")
-            all_files = list(seg_dir.glob("*.nii.gz"))
-            if all_files:
-                print(f"    Available:")
-                for f in all_files[:5]:
-                    print(f"      - {f.name}")
-            return None
-        
-        # Copy to output - extract study_id from input path
-        study_id = nifti_path.stem.replace('_T2w', '').replace('sub-', '')
+        # Copy to output directory
         seg_output = output_dir / f"{study_id}_seg.nii.gz"
-        shutil.copy(seg_files[0], seg_output)
+        shutil.copy(seg_file, seg_output)
         
         print(f"  ✓ Saved: {seg_output.name}")
         return seg_output
