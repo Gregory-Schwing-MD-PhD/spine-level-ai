@@ -2,7 +2,7 @@ FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 
 LABEL maintainer="go2432@wayne.edu"
 LABEL description="SPINEPS LSTV screening container"
-LABEL version="1.0"
+LABEL version="1.1"
 
 WORKDIR /app
 
@@ -15,14 +15,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# CRITICAL: Force numpy 1.x BEFORE installing SPINEPS
-RUN pip install --no-cache-dir --force-reinstall "numpy>=1.25.2,<2.0"
-
-# Install SPINEPS with numpy 1.x
-RUN pip install --no-cache-dir git+https://github.com/Hendrik-code/spineps.git
-
-# Install our additional packages
+# Install ALL Python packages in ONE command
+# This forces pip to solve the entire dependency graph at once
+# ensuring everything agrees on numpy 1.x
 RUN pip install --no-cache-dir \
+    "numpy>=1.25.2,<2.0" \
+    git+https://github.com/Hendrik-code/spineps.git \
     pydicom \
     nibabel \
     dicom2nifti \
@@ -31,10 +29,10 @@ RUN pip install --no-cache-dir \
     pandas \
     Pillow
 
-# Set SPINEPS model directory
+# Set SPINEPS environment
 ENV SPINEPS_SEGMENTOR_MODELS=/app/models
-RUN mkdir -p /app/models /app/data /app/output
-
 ENV PYTHONUNBUFFERED=1
+
+RUN mkdir -p /app/models /app/data /app/output
 
 CMD ["/bin/bash"]

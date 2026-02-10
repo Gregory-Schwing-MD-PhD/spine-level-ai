@@ -297,9 +297,11 @@ def upload_to_roboflow(image_path, study_id, roboflow_key, workspace, project):
         workspace_obj = rf.workspace(workspace)
         project_obj = workspace_obj.project(project)
         
-        # Upload image
+        # Upload image with metadata
         project_obj.upload(
             image_path=str(image_path),
+            split="train",  # Added: organize uploads
+            tag_names=["lstv-candidate", "automated-screening"],  # Added: useful tags
             num_retry_uploads=3
         )
         

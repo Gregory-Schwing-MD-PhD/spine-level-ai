@@ -50,9 +50,10 @@ unset R_LIBS_SITE
 
 # Project directories
 PROJECT_DIR="$(pwd)"
-DATA_DIR="${PROJECT_DIR}/data/raw/train_images"  # RSNA dataset location
-OUTPUT_DIR="${PROJECT_DIR}/results/lstv_screening/trial"  # ← Fixed: outputs in results/
-SCRIPT_PATH="${PROJECT_DIR}/src/screening/lstv_screen.py"  # ← Fixed: script location
+DATA_DIR="${PROJECT_DIR}/data/raw/train_images"
+SERIES_CSV="${PROJECT_DIR}/data/raw/train_series_descriptions.csv"
+OUTPUT_DIR="${PROJECT_DIR}/results/lstv_screening/trial"
+SCRIPT_PATH="${PROJECT_DIR}/src/screening/lstv_screen.py"
 
 # Create directories
 mkdir -p $OUTPUT_DIR/logs
@@ -70,14 +71,18 @@ fi
 
 echo "Container ready: $IMG_PATH"
 
-# Roboflow API key (set this as environment variable or pass directly)
-ROBOFLOW_KEY="${ROBOFLOW_API_KEY:-your_roboflow_key_here}"
+# Roboflow credentials
+ROBOFLOW_KEY="izolWNqCVveKyMrACYzN"
+ROBOFLOW_WORKSPACE="spinelevelai"
+ROBOFLOW_PROJECT="lstv-candidates"
 
 echo "================================================================"
 echo "Starting LSTV screening (TRIAL - 5 studies)..."
 echo "Script: $SCRIPT_PATH"
 echo "Data: $DATA_DIR"
+echo "Series CSV: $SERIES_CSV"
 echo "Output: $OUTPUT_DIR"
+echo "Roboflow: $ROBOFLOW_WORKSPACE/$ROBOFLOW_PROJECT"
 echo "================================================================"
 
 # Run screening with GPU support (--nv flag)
@@ -85,15 +90,17 @@ singularity exec --nv \
     --bind $PROJECT_DIR:/work \
     --bind $DATA_DIR:/data/input \
     --bind $OUTPUT_DIR:/data/output \
+    --bind $(dirname $SERIES_CSV):/data/raw \
     --pwd /work \
     "$IMG_PATH" \
     python /work/src/screening/lstv_screen.py \
         --input_dir /data/input \
+        --series_csv /data/raw/train_series_descriptions.csv \
         --output_dir /data/output \
         --limit 5 \
         --roboflow_key "$ROBOFLOW_KEY" \
-        --roboflow_workspace "lstv-screening" \
-        --roboflow_project "lstv-candidates" \
+        --roboflow_workspace "$ROBOFLOW_WORKSPACE" \
+        --roboflow_project "$ROBOFLOW_PROJECT" \
         --verbose
 
 exit_code=$?
