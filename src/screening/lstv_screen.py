@@ -18,6 +18,54 @@ import subprocess
 import shutil
 import traceback
 
+def load_series_descriptions(csv_path):
+    """Load series descriptions to identify correct series"""
+    try:
+        df = pd.read_csv(csv_path)
+        return df
+    except Exception as e:
+        print(f"Warning: Could not load series descriptions: {e}")
+        return None
+
+def select_best_series(study_dir, series_df=None, study_id=None):
+    """
+    Select the best series for LSTV screening
+    Priority: Sagittal T2 > Sagittal T1 > Any Sagittal
+    """
+    series_dirs = sorted([d for d in study_dir.iterdir() if d.is_dir()])
+    
+    if not series_dirs:
+        return None
+    
+    # If we have series descriptions, use them
+    if series_df is not None and study_id is not None:
+        study_series = series_df[series_df['study_id'] == int(study_id)]
+        
+        if len(study_series) > 0:
+            # Priority order for LSTV screening
+            priorities = [
+                'Sagittal T2',
+                'Sagittal T2/STIR',
+                'SAG T2',
+                'Sagittal T1',
+                'SAG T1',
+            ]
+            
+            for priority in priorities:
+                matching = study_series[
+                    study_series['series_description'].str.contains(priority, case=False, na=False)
+                ]
+                
+                if len(matching) > 0:
+                    series_id = str(matching.iloc[0]['series_id'])
+                    series_path = study_dir / series_id
+                    
+                    if series_path.exists():
+                        return series_path
+    
+    # Fallback: return first series
+    return series_dirs[0]
+
 def convert_dicom_to_nifti(dicom_dir, output_path):
     """Convert DICOM series to NIfTI using dcm2niix"""
     try:
@@ -31,6 +79,7 @@ def convert_dicom_to_nifti(dicom_dir, output_path):
             '-f', output_path.stem,  # Output filename
             '-o', str(output_path.parent),  # Output directory
             '-m', 'y',  # Merge 2D slices
+            '-b', 'n',  # Don't create .json sidecar
             str(dicom_dir)
         ]
         
@@ -47,7 +96,7 @@ def convert_dicom_to_nifti(dicom_dir, output_path):
             print(f"  ✗ No NIfTI file generated")
             return None
         
-        # Return the first/largest file
+        # Return the first file
         return nifti_files[0]
         
     except subprocess.TimeoutExpired:
@@ -59,25 +108,41 @@ def convert_dicom_to_nifti(dicom_dir, output_path):
         return None
 
 def run_spineps_inference(nifti_path, output_dir):
-    """Run SPINEPS segmentation on NIfTI volume"""
+    """
+    Run SPINEPS segmentation on NIfTI volume
+    
+    NOTE: This assumes SPINEPS CLI exists. If it's Python-only, adjust to:
+    from spineps.seg_run import process_img_nii
+    """
     try:
-        # SPINEPS command-line interface
-        # Adjust based on actual SPINEPS API
+        output_dir.mkdir(parents=True, exist_ok=True)
         seg_output = output_dir / f"{nifti_path.stem}_seg.nii.gz"
         
+        # Method 1: Try CLI first
         cmd = [
             'spineps',
             'segment',
             str(nifti_path),
             '-o', str(seg_output),
-            '--model', 'default'
         ]
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
         if result.returncode != 0:
-            print(f"  ✗ SPINEPS failed: {result.stderr}")
-            return None
+            print(f"  ✗ SPINEPS CLI failed, trying Python API...")
+            
+            # Method 2: Fall back to Python API
+            try:
+                from spineps.seg_run import process_img_nii
+                
+                process_img_nii(
+                    img_path=str(nifti_path),
+                    derivative_name=str(seg_output),
+                    verbose=False
+                )
+            except Exception as py_error:
+                print(f"  ✗ SPINEPS Python API also failed: {py_error}")
+                return None
         
         if not seg_output.exists():
             print(f"  ✗ Segmentation output not found")
@@ -94,7 +159,13 @@ def run_spineps_inference(nifti_path, output_dir):
         return None
 
 def analyze_segmentation(seg_path):
-    """Analyze SPINEPS segmentation for LSTV indicators"""
+    """
+    Analyze SPINEPS segmentation for LSTV indicators
+    
+    SPINEPS label scheme (from their documentation):
+    - Vertebrae are labeled sequentially
+    - Need to verify exact label numbers
+    """
     try:
         # Load segmentation
         seg_nii = nib.load(seg_path)
@@ -104,49 +175,52 @@ def analyze_segmentation(seg_path):
         unique_labels = np.unique(seg_data)
         unique_labels = unique_labels[unique_labels > 0]  # Remove background
         
-        # SPINEPS label scheme (VERIFY THIS - may need adjustment)
-        # Typically: Vertebrae are sequential labels
-        # We need to count lumbar vertebrae (usually 5)
-        # and check for sacrum presence
+        # HEURISTIC: Count distinct vertebral bodies
+        # In a normal lumbar scan: should see 5 lumbar vertebrae (L1-L5)
+        # LSTV cases: may see 4, 6, or anomalous spacing
         
-        # Simple heuristic: count all vertebrae labels
-        vertebra_labels = [l for l in unique_labels if l < 100]  # Exclude other structures
+        # Filter to vertebral labels (typically in a certain range)
+        # This is a GUESS - needs verification from SPINEPS docs
+        vertebra_labels = unique_labels  # Adjust this filter
         vertebra_count = len(vertebra_labels)
         
-        # Check if we can identify sacrum (typically highest label in lumbar region)
-        # This is a ROUGH heuristic - adjust based on actual SPINEPS output
-        has_sacrum = vertebra_count > 0  # Placeholder
+        # Check for sacrum presence (typically the caudal-most structure)
+        has_sacrum = len(unique_labels) > 0  # Placeholder
         
-        # Calculate spacing between last two vertebrae
+        # Calculate inter-vertebral spacing
         fusion_detected = False
         if len(vertebra_labels) >= 2:
             # Get masks of last two vertebrae
             sorted_labels = sorted(vertebra_labels)
-            last_vert = sorted_labels[-1]
-            second_last = sorted_labels[-2]
             
-            last_mask = (seg_data == last_vert)
-            second_mask = (seg_data == second_last)
-            
-            if last_mask.sum() > 0 and second_mask.sum() > 0:
-                # Calculate centroids
-                last_centroid = np.array(np.where(last_mask)).mean(axis=1)
-                second_centroid = np.array(np.where(second_mask)).mean(axis=1)
+            # Check all adjacent pairs for abnormal spacing
+            for i in range(len(sorted_labels) - 1):
+                curr_label = sorted_labels[i]
+                next_label = sorted_labels[i + 1]
                 
-                # Calculate distance
-                distance = np.linalg.norm(last_centroid - second_centroid)
+                curr_mask = (seg_data == curr_label)
+                next_mask = (seg_data == next_label)
                 
-                # Get voxel spacing
-                spacing = seg_nii.header.get_zooms()
-                physical_distance = distance * spacing[0]  # Approximate
-                
-                # If distance is very small (<10mm), possible fusion
-                if physical_distance < 10:
-                    fusion_detected = True
+                if curr_mask.sum() > 100 and next_mask.sum() > 100:  # Ensure real structures
+                    # Calculate centroids
+                    curr_centroid = np.array(np.where(curr_mask)).mean(axis=1)
+                    next_centroid = np.array(np.where(next_mask)).mean(axis=1)
+                    
+                    # Calculate distance
+                    distance = np.linalg.norm(curr_centroid - next_centroid)
+                    
+                    # Get voxel spacing
+                    spacing = seg_nii.header.get_zooms()
+                    physical_distance = distance * np.mean(spacing)  # Average spacing
+                    
+                    # If distance is very small (<5mm), possible fusion
+                    if physical_distance < 5:
+                        fusion_detected = True
+                        break
         
         # Flag if abnormal count or fusion
         # Standard is 5 lumbar vertebrae (L1-L5)
-        is_lstv_candidate = (vertebra_count != 5) or fusion_detected
+        is_lstv_candidate = (vertebra_count < 4 or vertebra_count > 6) or fusion_detected
         
         result = {
             'vertebra_count': vertebra_count,
@@ -169,9 +243,19 @@ def extract_middle_slice(nifti_path, output_jpg):
         nii = nib.load(nifti_path)
         data = nii.get_fdata()
         
-        # Get middle sagittal slice (assuming sagittal is first dimension)
-        mid_slice_idx = data.shape[0] // 2
-        slice_img = data[mid_slice_idx, :, :]
+        # Determine orientation and extract sagittal slice
+        # Sagittal is typically the smallest dimension
+        dims = data.shape
+        sag_axis = np.argmin(dims)
+        
+        mid_idx = dims[sag_axis] // 2
+        
+        if sag_axis == 0:
+            slice_img = data[mid_idx, :, :]
+        elif sag_axis == 1:
+            slice_img = data[:, mid_idx, :]
+        else:
+            slice_img = data[:, :, mid_idx]
         
         # Normalize to 0-255
         if slice_img.max() > slice_img.min():
@@ -212,8 +296,8 @@ def upload_to_roboflow(image_path, study_id, roboflow_key, workspace, project):
         return True
         
     except Exception as e:
-        print(f"  ✗ Roboflow upload error: {e}")
-        # Don't crash on upload failures - just log and continue
+        print(f"  ⚠ Roboflow upload error: {e}")
+        # Don't crash on upload failures
         return False
 
 def load_progress(progress_file):
@@ -223,27 +307,23 @@ def load_progress(progress_file):
             with open(progress_file, 'r') as f:
                 return json.load(f)
         except:
-            # If corrupted, start fresh
             return {'processed': [], 'flagged': [], 'failed': []}
     return {'processed': [], 'flagged': [], 'failed': []}
 
 def save_progress(progress_file, progress):
     """Save processing progress atomically"""
     try:
-        # Write to temp file first
         temp_file = progress_file.with_suffix('.json.tmp')
         with open(temp_file, 'w') as f:
             json.dump(progress, f, indent=2)
-        
-        # Atomic rename
         temp_file.replace(progress_file)
-        
     except Exception as e:
         print(f"Warning: Could not save progress: {e}")
 
 def main():
     parser = argparse.ArgumentParser(description='LSTV Screening Pipeline')
     parser.add_argument('--input_dir', type=str, required=True, help='Input directory with DICOM studies')
+    parser.add_argument('--series_csv', type=str, default=None, help='Path to train_series_descriptions.csv')
     parser.add_argument('--output_dir', type=str, required=True, help='Output directory for results')
     parser.add_argument('--limit', type=int, default=None, help='Limit number of studies to process')
     parser.add_argument('--roboflow_key', type=str, required=True, help='Roboflow API key')
@@ -266,6 +346,16 @@ def main():
     seg_dir.mkdir(exist_ok=True)
     images_dir.mkdir(exist_ok=True)
     
+    # Load series descriptions if available
+    series_df = None
+    if args.series_csv:
+        series_csv = Path(args.series_csv)
+        if series_csv.exists():
+            series_df = load_series_descriptions(series_csv)
+            print(f"Loaded series descriptions: {len(series_df)} entries")
+        else:
+            print(f"Warning: Series CSV not found: {args.series_csv}")
+    
     # Load progress
     progress_file = output_dir / 'progress.json'
     progress = load_progress(progress_file)
@@ -273,7 +363,7 @@ def main():
     # Results CSV
     results_csv = output_dir / 'results.csv'
     
-    # Find all study directories (RSNA format: study_id/series_id/*.dcm)
+    # Find all study directories
     study_dirs = sorted([d for d in input_dir.iterdir() if d.is_dir()])
     
     if args.limit:
@@ -303,17 +393,17 @@ def main():
         sys.stdout.flush()
         
         try:
-            # Find DICOM series directories (may have multiple series per study)
-            series_dirs = [d for d in study_dir.iterdir() if d.is_dir()]
+            # Select best series for LSTV screening
+            series_dir = select_best_series(study_dir, series_df, study_id)
             
-            if not series_dirs:
-                print(f"  ✗ No series directories found")
+            if series_dir is None:
+                print(f"  ✗ No series found")
                 progress['failed'].append(study_id)
+                progress['processed'].append(study_id)
                 save_progress(progress_file, progress)
                 continue
             
-            # Use first series (or implement series selection logic)
-            dicom_dir = series_dirs[0]
+            print(f"  Using series: {series_dir.name}")
             
             # Convert DICOM to NIfTI
             nifti_path = nifti_dir / f"{study_id}.nii.gz"
@@ -321,7 +411,7 @@ def main():
             if not nifti_path.exists():
                 print(f"  Converting DICOM to NIfTI...")
                 sys.stdout.flush()
-                nifti_path = convert_dicom_to_nifti(dicom_dir, nifti_path)
+                nifti_path = convert_dicom_to_nifti(series_dir, nifti_path)
                 
                 if nifti_path is None:
                     print(f"  ✗ Conversion failed")
@@ -360,6 +450,7 @@ def main():
             # Store results
             result = {
                 'study_id': study_id,
+                'series_id': series_dir.name,
                 'vertebra_count': analysis['vertebra_count'],
                 'has_sacrum': analysis['has_sacrum'],
                 'fusion_detected': analysis['fusion_detected'],
@@ -391,7 +482,7 @@ def main():
                         print(f"  ✓ Uploaded to Roboflow")
                         progress['flagged'].append(study_id)
                     else:
-                        print(f"  ⚠ Roboflow upload failed (continuing anyway)")
+                        print(f"  ⚠ Roboflow upload failed (continuing)")
             else:
                 print(f"  ✓ Normal (count={analysis['vertebra_count']})")
             
@@ -401,7 +492,7 @@ def main():
             progress['processed'].append(study_id)
             save_progress(progress_file, progress)
             
-            # Append to results CSV (atomic write)
+            # Append to results CSV
             df = pd.DataFrame([result])
             if results_csv.exists():
                 df.to_csv(results_csv, mode='a', header=False, index=False)
@@ -409,14 +500,13 @@ def main():
                 df.to_csv(results_csv, mode='w', header=True, index=False)
             
         except KeyboardInterrupt:
-            print("\n\n⚠️ Interrupted by user - progress saved!")
+            print("\n\n⚠️ Interrupted - progress saved!")
             save_progress(progress_file, progress)
             sys.exit(1)
             
         except Exception as e:
             print(f"  ✗ Unexpected error: {e}")
             traceback.print_exc()
-            # Mark as failed but processed to avoid infinite retries
             progress['failed'].append(study_id)
             progress['processed'].append(study_id)
             save_progress(progress_file, progress)
