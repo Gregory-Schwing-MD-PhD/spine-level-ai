@@ -15,11 +15,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ALL Python packages in ONE command
-# This forces pip to solve the entire dependency graph at once
-# ensuring everything agrees on numpy 1.x
+# Copy constraints file
+COPY docker/constraints.txt /tmp/constraints.txt
+
+# Set PIP_CONSTRAINT environment variable to FORCE numpy < 2.0
+ENV PIP_CONSTRAINT=/tmp/constraints.txt
+
+# Install all packages - pip will respect the constraint file
 RUN pip install --no-cache-dir \
-    "numpy>=1.25.2,<2.0" \
     git+https://github.com/Hendrik-code/spineps.git \
     pydicom \
     nibabel \
