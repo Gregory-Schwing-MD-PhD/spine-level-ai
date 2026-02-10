@@ -71,34 +71,43 @@ def convert_dicom_to_nifti(dicom_dir, output_path):
     try:
         # Create output directory
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        # Extract base name without any extensions
+        # If output_path is "study.nii.gz", we want just "study"
+        base_name = output_path.name.replace('.nii.gz', '').replace('.nii', '')
+
         # Use dcm2niix for conversion
         cmd = [
             'dcm2niix',
             '-z', 'y',  # Compress output
-            '-f', output_path.stem,  # Output filename
+            '-f', base_name,  # Output filename (just the base, no extensions)
             '-o', str(output_path.parent),  # Output directory
             '-m', 'y',  # Merge 2D slices
             '-b', 'n',  # Don't create .json sidecar
             str(dicom_dir)
         ]
-        
+
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        
+
         if result.returncode != 0:
             print(f"  ✗ dcm2niix failed: {result.stderr}")
             return None
-        
+
         # Find the generated .nii.gz file (dcm2niix may add suffixes)
-        nifti_files = sorted(output_path.parent.glob(f"{output_path.stem}*.nii.gz"))
-        
+        nifti_files = sorted(output_path.parent.glob(f"{base_name}*.nii.gz"))
+
         if not nifti_files:
             print(f"  ✗ No NIfTI file generated")
             return None
-        
-        # Return the first file
-        return nifti_files[0]
-        
+
+        # Rename to our expected filename if needed
+        final_file = nifti_files[0]
+        if final_file != output_path:
+            final_file.rename(output_path)
+            final_file = output_path
+
+        return final_file
+
     except subprocess.TimeoutExpired:
         print(f"  ✗ Conversion timeout (>120s)")
         return None

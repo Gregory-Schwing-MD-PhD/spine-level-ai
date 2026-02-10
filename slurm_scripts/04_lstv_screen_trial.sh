@@ -55,6 +55,10 @@ SERIES_CSV="${PROJECT_DIR}/data/raw/train_series_descriptions.csv"
 OUTPUT_DIR="${PROJECT_DIR}/results/lstv_screening/trial"
 SCRIPT_PATH="${PROJECT_DIR}/src/screening/lstv_screen.py"
 
+# CRITICAL: Create writable models cache directory
+MODELS_CACHE="${PROJECT_DIR}/spineps_models"
+mkdir -p $MODELS_CACHE
+
 # Create directories
 mkdir -p $OUTPUT_DIR/logs
 
@@ -82,15 +86,21 @@ echo "Script: $SCRIPT_PATH"
 echo "Data: $DATA_DIR"
 echo "Series CSV: $SERIES_CSV"
 echo "Output: $OUTPUT_DIR"
+echo "Models Cache: $MODELS_CACHE"
 echo "Roboflow: $ROBOFLOW_WORKSPACE/$ROBOFLOW_PROJECT"
 echo "================================================================"
 
 # Run screening with GPU support (--nv flag)
+# CRITICAL: Bind models cache to BOTH locations SPINEPS expects
 singularity exec --nv \
     --bind $PROJECT_DIR:/work \
     --bind $DATA_DIR:/data/input \
     --bind $OUTPUT_DIR:/data/output \
+    --bind $MODELS_CACHE:/app/models \
     --bind $(dirname $SERIES_CSV):/data/raw \
+    --bind $MODELS_CACHE:/opt/conda/lib/python3.10/site-packages/spineps/models \
+    --env SPINEPS_SEGMENTOR_MODELS=/app/models \
+    --env SPINEPS_ENVIRONMENT_DIR=/app/models \
     --pwd /work \
     "$IMG_PATH" \
     python /work/src/screening/lstv_screen.py \
