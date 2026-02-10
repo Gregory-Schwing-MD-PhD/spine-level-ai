@@ -53,6 +53,7 @@ PROJECT_DIR="$(pwd)"
 DATA_DIR="${PROJECT_DIR}/data/raw/train_images"
 SERIES_CSV="${PROJECT_DIR}/data/raw/train_series_descriptions.csv"
 OUTPUT_DIR="${PROJECT_DIR}/results/lstv_screening/trial"
+NIFTI_DIR="${OUTPUT_DIR}/nifti"
 SCRIPT_PATH="${PROJECT_DIR}/src/screening/lstv_screen.py"
 
 # CRITICAL: Create writable models cache directory
@@ -61,6 +62,7 @@ mkdir -p $MODELS_CACHE
 
 # Create directories
 mkdir -p $OUTPUT_DIR/logs
+mkdir -p $NIFTI_DIR
 
 # Docker container (auto-converts to Singularity)
 DOCKER_USERNAME="go2432"
@@ -96,6 +98,7 @@ singularity exec --nv \
     --bind $PROJECT_DIR:/work \
     --bind $DATA_DIR:/data/input \
     --bind $OUTPUT_DIR:/data/output \
+    --bind $NIFTI_DIR:/data/output/nifti \
     --bind $MODELS_CACHE:/app/models \
     --bind $(dirname $SERIES_CSV):/data/raw \
     --bind $MODELS_CACHE:/opt/conda/lib/python3.10/site-packages/spineps/models \
