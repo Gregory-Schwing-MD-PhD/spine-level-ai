@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LSTV Screening Pipeline using SPINEPS
-Screens lumbar MRI studies for LSTV candidates
+Screens lumbar MRI studies for LSTV candidates using sagittal-only features
 """
 
 import argparse
@@ -11,7 +11,6 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import cv2
-import pydicom
 import nibabel as nib
 from tqdm import tqdm
 import subprocess
@@ -33,14 +32,14 @@ def select_best_series(study_dir, series_df=None, study_id=None):
     Priority: Sagittal T2 > Sagittal T1 > Any Sagittal
     """
     series_dirs = sorted([d for d in study_dir.iterdir() if d.is_dir()])
-    
+
     if not series_dirs:
         return None
-    
+
     # If we have series descriptions, use them
     if series_df is not None and study_id is not None:
         study_series = series_df[series_df['study_id'] == int(study_id)]
-        
+
         if len(study_series) > 0:
             # Priority order for LSTV screening
             priorities = [
@@ -50,19 +49,19 @@ def select_best_series(study_dir, series_df=None, study_id=None):
                 'Sagittal T1',
                 'SAG T1',
             ]
-            
+
             for priority in priorities:
                 matching = study_series[
                     study_series['series_description'].str.contains(priority, case=False, na=False)
                 ]
-                
+
                 if len(matching) > 0:
                     series_id = str(matching.iloc[0]['series_id'])
                     series_path = study_dir / series_id
-                    
+
                     if series_path.exists():
                         return series_path
-    
+
     # Fallback: return first series
     return series_dirs[0]
 
@@ -73,17 +72,16 @@ def convert_dicom_to_nifti(dicom_dir, output_path):
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Extract base name without any extensions
-        # If output_path is "study.nii.gz", we want just "study"
         base_name = output_path.name.replace('.nii.gz', '').replace('.nii', '')
 
         # Use dcm2niix for conversion
         cmd = [
             'dcm2niix',
-            '-z', 'y',  # Compress output
-            '-f', base_name,  # Output filename (just the base, no extensions)
-            '-o', str(output_path.parent),  # Output directory
-            '-m', 'y',  # Merge 2D slices
-            '-b', 'n',  # Don't create .json sidecar
+            '-z', 'y',
+            '-f', base_name,
+            '-o', str(output_path.parent),
+            '-m', 'y',
+            '-b', 'n',
             str(dicom_dir)
         ]
 
@@ -93,7 +91,7 @@ def convert_dicom_to_nifti(dicom_dir, output_path):
             print(f"  ✗ dcm2niix failed: {result.stderr}")
             return None
 
-        # Find the generated .nii.gz file (dcm2niix may add suffixes)
+        # Find the generated .nii.gz file
         nifti_files = sorted(output_path.parent.glob(f"{base_name}*.nii.gz"))
 
         if not nifti_files:
@@ -118,60 +116,70 @@ def convert_dicom_to_nifti(dicom_dir, output_path):
 
 def run_spineps_inference(nifti_path, output_dir):
     """
-    Run SPINEPS segmentation on NIfTI volume using the CLI
+    Run SPINEPS segmentation on NIfTI volume
+    SPINEPS creates derivatives folder next to input file
     """
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # SPINEPS creates a derivatives folder next to the input
-        # We'll specify a custom derivative name
-        derivative_name = "spineps_output"
-        
-        # Run SPINEPS CLI
+        # Run SPINEPS - it will create derivatives next to the input
         cmd = [
             'spineps',
             'sample',
             '-i', str(nifti_path),
-            '-model_semantic', 't2w',  # For T2w sagittal images
+            '-model_semantic', 't2w',
             '-model_instance', 'instance',
-            '-model_labeling', 't2w_labeling',  # VERIDAH labeling
-            '-der_name', derivative_name,
+            '-model_labeling', 't2w_labeling',
             '-override_semantic',
             '-override_instance',
             '-override_ctd',
         ]
-        
+
         print(f"    Running: {' '.join(cmd)}")
         sys.stdout.flush()
-        
+
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        
+
         if result.returncode != 0:
-            print(f"  ✗ SPINEPS failed: {result.stderr}")
+            print(f"  ✗ SPINEPS failed:")
+            print(f"    {result.stderr[:300]}")
             return None
-        
-        # SPINEPS creates output in: <input_dir>/<derivative_name>/
+
+        # SPINEPS creates: <input_parent>/derivatives/<basename>/
         input_parent = nifti_path.parent
-        seg_dir = input_parent / derivative_name
+        derivatives_base = input_parent / "derivatives"
         
-        # Find the instance segmentation output (seg-vert)
-        seg_vert_files = list(seg_dir.glob("*_seg-vert_msk.nii.gz"))
-        
-        if not seg_vert_files:
-            print(f"  ✗ SPINEPS output not found in {seg_dir}")
-            # Try to list what's actually there
-            if seg_dir.exists():
-                print(f"    Contents: {list(seg_dir.glob('*'))}")
+        if not derivatives_base.exists():
+            print(f"  ✗ Derivatives directory not found: {derivatives_base}")
             return None
         
-        # Copy to our output directory
-        seg_output = output_dir / f"{nifti_path.stem}_seg.nii.gz"
-        shutil.copy(seg_vert_files[0], seg_output)
+        # Find subject directory (should match input filename)
+        subject_dirs = list(derivatives_base.iterdir())
         
-        print(f"  ✓ Segmentation saved to {seg_output}")
+        if not subject_dirs:
+            print(f"  ✗ No subject directory in derivatives")
+            return None
         
+        seg_dir = subject_dirs[0]
+
+        # Find the vertebra instance segmentation file
+        seg_files = list(seg_dir.glob("*_seg-vert_msk.nii.gz"))
+
+        if not seg_files:
+            print(f"  ✗ No segmentation file found")
+            all_files = list(seg_dir.glob("*.nii.gz"))
+            if all_files:
+                print(f"    Found: {[f.name for f in all_files[:3]]}")
+            return None
+
+        # Copy to output directory
+        study_id = nifti_path.stem.replace('.nii', '')
+        seg_output = output_dir / f"{study_id}_seg.nii.gz"
+        shutil.copy(seg_files[0], seg_output)
+
+        print(f"  ✓ Segmentation complete")
         return seg_output
-        
+
     except subprocess.TimeoutExpired:
         print(f"  ✗ SPINEPS timeout (>10min)")
         return None
@@ -182,140 +190,111 @@ def run_spineps_inference(nifti_path, output_dir):
 
 def analyze_segmentation(seg_path):
     """
-    Analyze SPINEPS segmentation for LSTV indicators
+    Analyze SPINEPS segmentation for LSTV using sagittal-only features
     
-    SPINEPS vertebra instance labels:
-    - Labels 1-25: Individual vertebrae (C1-L6)
-    - Labels 100+X: IVD below vertebra X
-    - Labels 200+X: Endplate of vertebra X
-    - Label 26: Sacrum
+    SPINEPS labels:
+    - 20-25: L1-L6
+    - 26: Sacrum
+    - 100+X: IVD below vertebra X
     """
     try:
-        # Load segmentation
         seg_nii = nib.load(seg_path)
         seg_data = seg_nii.get_fdata().astype(int)
-        
-        # Get unique vertebra labels (1-25)
+
         unique_labels = np.unique(seg_data)
         vertebra_labels = [l for l in unique_labels if 1 <= l <= 25]
-        
-        # Count lumbar vertebrae (L1-L6 are labels 20-25 in SPINEPS)
         lumbar_labels = [l for l in vertebra_labels if 20 <= l <= 25]
+        
         vertebra_count = len(lumbar_labels)
-        
-        # Check for sacrum
         has_sacrum = 26 in unique_labels
+        has_l6 = 25 in lumbar_labels
+        s1_s2_disc_present = 126 in unique_labels
         
-        # Check for fusion: look at spacing between adjacent vertebrae
-        fusion_detected = False
-        if len(lumbar_labels) >= 2:
-            sorted_labels = sorted(lumbar_labels)
-            
-            for i in range(len(sorted_labels) - 1):
-                curr_label = sorted_labels[i]
-                next_label = sorted_labels[i + 1]
-                
-                curr_mask = (seg_data == curr_label)
-                next_mask = (seg_data == next_label)
-                
-                if curr_mask.sum() > 100 and next_mask.sum() > 100:
-                    # Calculate centroids
-                    curr_centroid = np.array(np.where(curr_mask)).mean(axis=1)
-                    next_centroid = np.array(np.where(next_mask)).mean(axis=1)
-                    
-                    # Calculate distance
-                    distance = np.linalg.norm(curr_centroid - next_centroid)
-                    
-                    # Get voxel spacing
-                    spacing = seg_nii.header.get_zooms()
-                    physical_distance = distance * np.mean(spacing)
-                    
-                    # If distance is very small (<5mm), possible fusion
-                    if physical_distance < 5:
-                        fusion_detected = True
-                        break
+        # LSTV Detection: Normal = 5 lumbar vertebrae (L1-L5)
+        is_lstv_candidate = (
+            vertebra_count != 5 or
+            s1_s2_disc_present or
+            has_l6
+        )
         
-        # Flag if abnormal count or fusion
-        # Normal: 5 lumbar vertebrae (L1-L5)
-        # LSTV: 4 (sacralization) or 6 (lumbarization)
-        is_lstv_candidate = (vertebra_count < 4 or vertebra_count > 6) or fusion_detected
-        
-        result = {
+        lstv_type = "normal"
+        if vertebra_count < 5:
+            lstv_type = "possible_sacralization"
+        elif vertebra_count > 5 or has_l6:
+            lstv_type = "possible_lumbarization"
+        elif s1_s2_disc_present:
+            lstv_type = "s1_s2_disc_present"
+
+        return {
             'vertebra_count': vertebra_count,
             'has_sacrum': has_sacrum,
-            'fusion_detected': fusion_detected,
+            'has_l6': has_l6,
+            's1_s2_disc_present': s1_s2_disc_present,
             'is_lstv_candidate': is_lstv_candidate,
+            'lstv_type': lstv_type,
             'unique_labels': list(map(int, unique_labels)),
             'lumbar_labels': list(map(int, lumbar_labels)),
         }
-        
-        return result
-        
+
     except Exception as e:
         print(f"  ✗ Analysis error: {e}")
         traceback.print_exc()
         return None
 
 def extract_middle_slice(nifti_path, output_jpg):
-    """Extract middle sagittal slice as JPG for Roboflow upload"""
+    """Extract middle sagittal slice as JPG"""
     try:
         nii = nib.load(nifti_path)
         data = nii.get_fdata()
-        
-        # Determine orientation and extract sagittal slice
-        # Sagittal is typically the smallest dimension
+
         dims = data.shape
         sag_axis = np.argmin(dims)
-        
         mid_idx = dims[sag_axis] // 2
-        
+
         if sag_axis == 0:
             slice_img = data[mid_idx, :, :]
         elif sag_axis == 1:
             slice_img = data[:, mid_idx, :]
         else:
             slice_img = data[:, :, mid_idx]
-        
-        # Normalize to 0-255
+
+        # Normalize
         if slice_img.max() > slice_img.min():
             slice_img = ((slice_img - slice_img.min()) / (slice_img.max() - slice_img.min()) * 255).astype(np.uint8)
         else:
             slice_img = np.zeros_like(slice_img, dtype=np.uint8)
-        
-        # Apply CLAHE for better contrast
+
+        # CLAHE
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         slice_img = clahe.apply(slice_img)
-        
-        # Save as JPG
+
         output_jpg.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_jpg), slice_img)
-        
+
         return True
-        
+
     except Exception as e:
         print(f"  ✗ Slice extraction error: {e}")
-        traceback.print_exc()
         return False
 
 def upload_to_roboflow(image_path, study_id, roboflow_key, workspace, project):
-    """Upload image to Roboflow workspace"""
+    """Upload image to Roboflow"""
     try:
         from roboflow import Roboflow
-        
+
         rf = Roboflow(api_key=roboflow_key)
         workspace_obj = rf.workspace(workspace)
         project_obj = workspace_obj.project(project)
-        
-        # Upload image with metadata
+
         project_obj.upload(
             image_path=str(image_path),
-            split="train",  # Added: organize uploads
-            tag_names=["lstv-candidate", "automated-screening"],  # Added: useful tags
+            split="train",
+            tag_names=["lstv-candidate", "automated-screening"],
             num_retry_uploads=3
         )
-        
+
         return True
-        
+
     except Exception as e:
         print(f"  ⚠ Roboflow upload error: {e}")
         return False
@@ -331,7 +310,7 @@ def load_progress(progress_file):
     return {'processed': [], 'flagged': [], 'failed': []}
 
 def save_progress(progress_file, progress):
-    """Save processing progress atomically"""
+    """Save processing progress"""
     try:
         temp_file = progress_file.with_suffix('.json.tmp')
         with open(temp_file, 'w') as f:
@@ -342,206 +321,164 @@ def save_progress(progress_file, progress):
 
 def main():
     parser = argparse.ArgumentParser(description='LSTV Screening Pipeline')
-    parser.add_argument('--input_dir', type=str, required=True, help='Input directory with DICOM studies')
-    parser.add_argument('--series_csv', type=str, default=None, help='Path to train_series_descriptions.csv')
-    parser.add_argument('--output_dir', type=str, required=True, help='Output directory for results')
-    parser.add_argument('--limit', type=int, default=None, help='Limit number of studies to process')
-    parser.add_argument('--roboflow_key', type=str, required=True, help='Roboflow API key')
-    parser.add_argument('--roboflow_workspace', type=str, default='lstv-screening', help='Roboflow workspace name')
-    parser.add_argument('--roboflow_project', type=str, default='lstv-candidates', help='Roboflow project name')
-    parser.add_argument('--verbose', action='store_true', help='Verbose logging')
-    
+    parser.add_argument('--input_dir', type=str, required=True)
+    parser.add_argument('--series_csv', type=str, default=None)
+    parser.add_argument('--output_dir', type=str, required=True)
+    parser.add_argument('--limit', type=int, default=None)
+    parser.add_argument('--roboflow_key', type=str, required=True)
+    parser.add_argument('--roboflow_workspace', type=str, default='lstv-screening')
+    parser.add_argument('--roboflow_project', type=str, default='lstv-candidates')
+    parser.add_argument('--verbose', action='store_true')
+
     args = parser.parse_args()
-    
-    # Setup directories
+
+    # Setup
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     nifti_dir = output_dir / 'nifti'
     seg_dir = output_dir / 'segmentations'
     images_dir = output_dir / 'candidate_images'
-    
+
     nifti_dir.mkdir(exist_ok=True)
     seg_dir.mkdir(exist_ok=True)
     images_dir.mkdir(exist_ok=True)
-    
-    # Load series descriptions if available
+
+    # Load series descriptions
     series_df = None
     if args.series_csv:
         series_csv = Path(args.series_csv)
         if series_csv.exists():
             series_df = load_series_descriptions(series_csv)
             print(f"Loaded series descriptions: {len(series_df)} entries")
-        else:
-            print(f"Warning: Series CSV not found: {args.series_csv}")
-    
+
     # Load progress
     progress_file = output_dir / 'progress.json'
     progress = load_progress(progress_file)
-    
-    # Results CSV
     results_csv = output_dir / 'results.csv'
-    
-    # Find all study directories
+
+    # Find studies
     study_dirs = sorted([d for d in input_dir.iterdir() if d.is_dir()])
-    
     if args.limit:
         study_dirs = study_dirs[:args.limit]
-    
+
     print("="*60)
-    print("LSTV SCREENING PIPELINE")
+    print("LSTV SCREENING PIPELINE (Sagittal-Only Detection)")
     print("="*60)
-    print(f"Total studies found: {len(study_dirs)}")
+    print(f"Total studies: {len(study_dirs)}")
     print(f"Already processed: {len(progress['processed'])}")
-    print(f"Already flagged: {len(progress['flagged'])}")
-    print(f"Previous failures: {len(progress.get('failed', []))}")
     print("="*60)
     sys.stdout.flush()
-    
+
     # Process studies
-    for study_dir in tqdm(study_dirs, desc="Processing studies"):
+    for study_dir in tqdm(study_dirs, desc="Processing"):
         study_id = study_dir.name
-        
-        # Skip if already processed
+
         if study_id in progress['processed']:
-            if args.verbose:
-                print(f"  Skipping {study_id} (already processed)")
             continue
-        
+
         print(f"\n[{study_id}]")
         sys.stdout.flush()
-        
+
         try:
-            # Select best series for LSTV screening
+            # Select series
             series_dir = select_best_series(study_dir, series_df, study_id)
-            
             if series_dir is None:
                 print(f"  ✗ No series found")
                 progress['failed'].append(study_id)
                 progress['processed'].append(study_id)
                 save_progress(progress_file, progress)
                 continue
-            
+
             print(f"  Using series: {series_dir.name}")
-            
-            # Convert DICOM to NIfTI
+
+            # Convert DICOM
             nifti_path = nifti_dir / f"{study_id}.nii.gz"
-            
             if not nifti_path.exists():
-                print(f"  Converting DICOM to NIfTI...")
-                sys.stdout.flush()
+                print(f"  Converting DICOM...")
                 nifti_path = convert_dicom_to_nifti(series_dir, nifti_path)
-                
                 if nifti_path is None:
-                    print(f"  ✗ Conversion failed")
                     progress['failed'].append(study_id)
                     progress['processed'].append(study_id)
                     save_progress(progress_file, progress)
                     continue
-            
+
             # Run SPINEPS
             seg_path = seg_dir / f"{study_id}_seg.nii.gz"
-            
             if not seg_path.exists():
-                print(f"  Running SPINEPS segmentation...")
-                sys.stdout.flush()
+                print(f"  Running SPINEPS...")
                 seg_path = run_spineps_inference(nifti_path, seg_dir)
-                
                 if seg_path is None:
-                    print(f"  ✗ Segmentation failed")
                     progress['failed'].append(study_id)
                     progress['processed'].append(study_id)
                     save_progress(progress_file, progress)
                     continue
-            
-            # Analyze segmentation
-            print(f"  Analyzing segmentation...")
-            sys.stdout.flush()
+
+            # Analyze
+            print(f"  Analyzing...")
             analysis = analyze_segmentation(seg_path)
-            
             if analysis is None:
-                print(f"  ✗ Analysis failed")
                 progress['failed'].append(study_id)
                 progress['processed'].append(study_id)
                 save_progress(progress_file, progress)
                 continue
-            
-            # Store results
+
+            # Save results
             result = {
                 'study_id': study_id,
                 'series_id': series_dir.name,
                 'vertebra_count': analysis['vertebra_count'],
                 'has_sacrum': analysis['has_sacrum'],
-                'fusion_detected': analysis['fusion_detected'],
+                'has_l6': analysis['has_l6'],
+                's1_s2_disc_present': analysis['s1_s2_disc_present'],
                 'is_lstv_candidate': analysis['is_lstv_candidate'],
-                'unique_labels': str(analysis['unique_labels']),
+                'lstv_type': analysis['lstv_type'],
                 'lumbar_labels': str(analysis['lumbar_labels']),
             }
-            
-            # If LSTV candidate, upload to Roboflow
+
+            # Upload if LSTV candidate
             if analysis['is_lstv_candidate']:
-                print(f"  🚩 LSTV CANDIDATE DETECTED!")
-                print(f"     Vertebra count: {analysis['vertebra_count']}")
-                print(f"     Lumbar labels: {analysis['lumbar_labels']}")
-                print(f"     Fusion: {analysis['fusion_detected']}")
-                sys.stdout.flush()
+                print(f"  🚩 LSTV CANDIDATE!")
+                print(f"     Count: {analysis['vertebra_count']} | Type: {analysis['lstv_type']}")
                 
-                # Extract middle slice
                 image_path = images_dir / f"{study_id}.jpg"
-                
                 if extract_middle_slice(nifti_path, image_path):
-                    print(f"  Uploading to Roboflow...")
-                    sys.stdout.flush()
-                    
-                    if upload_to_roboflow(
-                        image_path,
-                        study_id,
-                        args.roboflow_key,
-                        args.roboflow_workspace,
-                        args.roboflow_project
-                    ):
+                    if upload_to_roboflow(image_path, study_id, args.roboflow_key, 
+                                         args.roboflow_workspace, args.roboflow_project):
                         print(f"  ✓ Uploaded to Roboflow")
                         progress['flagged'].append(study_id)
-                    else:
-                        print(f"  ⚠ Roboflow upload failed (continuing)")
             else:
-                print(f"  ✓ Normal (count={analysis['vertebra_count']}, labels={analysis['lumbar_labels']})")
-            
-            sys.stdout.flush()
-            
-            # Mark as processed
+                print(f"  ✓ Normal ({analysis['vertebra_count']} lumbar)")
+
             progress['processed'].append(study_id)
             save_progress(progress_file, progress)
-            
-            # Append to results CSV
+
+            # Save to CSV
             df = pd.DataFrame([result])
             if results_csv.exists():
                 df.to_csv(results_csv, mode='a', header=False, index=False)
             else:
                 df.to_csv(results_csv, mode='w', header=True, index=False)
-            
+
         except KeyboardInterrupt:
-            print("\n\n⚠️ Interrupted - progress saved!")
+            print("\n⚠️ Interrupted - progress saved!")
             save_progress(progress_file, progress)
             sys.exit(1)
-            
         except Exception as e:
-            print(f"  ✗ Unexpected error: {e}")
+            print(f"  ✗ Error: {e}")
             traceback.print_exc()
             progress['failed'].append(study_id)
             progress['processed'].append(study_id)
             save_progress(progress_file, progress)
-            continue
-    
-    # Final summary
+
+    # Summary
     print("\n" + "="*60)
-    print("SCREENING COMPLETE")
+    print("COMPLETE")
     print("="*60)
-    print(f"Total processed: {len(progress['processed'])}")
+    print(f"Processed: {len(progress['processed'])}")
     print(f"LSTV candidates: {len(progress['flagged'])}")
     print(f"Failed: {len(progress.get('failed', []))}")
-    print(f"Results: {results_csv}")
     print("="*60)
 
 if __name__ == "__main__":
