@@ -2,7 +2,7 @@ FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 
 LABEL maintainer="go2432@wayne.edu"
 LABEL description="SPINEPS LSTV screening container"
-LABEL version="1.1"
+LABEL version="1.2"
 
 WORKDIR /app
 
@@ -22,8 +22,9 @@ COPY docker/constraints.txt /tmp/constraints.txt
 ENV PIP_CONSTRAINT=/tmp/constraints.txt
 
 # Install all packages - pip will respect the constraint file
+# Using latest commit from main branch
 RUN pip install --no-cache-dir \
-    git+https://github.com/Hendrik-code/spineps.git \
+    git+https://github.com/Hendrik-code/spineps.git@54fb222fe388efc23de6faec51125785880cee97 \
     pydicom \
     nibabel \
     dicom2nifti \
@@ -32,10 +33,13 @@ RUN pip install --no-cache-dir \
     pandas \
     Pillow
 
-# Set SPINEPS environment
+# Create directories
+RUN mkdir -p /app/models /app/data /app/output
+
+# Set SPINEPS environment variables
 ENV SPINEPS_SEGMENTOR_MODELS=/app/models
+ENV SPINEPS_ENVIRONMENT_DIR=/app/models
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONWARNINGS="ignore"
-RUN mkdir -p /app/models /app/data /app/output
 
 CMD ["/bin/bash"]
