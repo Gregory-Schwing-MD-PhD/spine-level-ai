@@ -6,9 +6,9 @@ set -e
 DOCKER_USERNAME="go2432"
 PROJECT_NAME="spineps-lstv"
 
-echo "Building SPINEPS container (NO CACHE)..."
+echo "Building SPINEPS container ..."
 
-docker build --no-cache \
+docker build \
     -f docker/Dockerfile.spineps \
     -t ${DOCKER_USERNAME}/${PROJECT_NAME}:latest \
     .

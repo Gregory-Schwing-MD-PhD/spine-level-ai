@@ -35,7 +35,7 @@ RUN pip install --no-cache-dir \
 # Set SPINEPS environment
 ENV SPINEPS_SEGMENTOR_MODELS=/app/models
 ENV PYTHONUNBUFFERED=1
-
+ENV PYTHONWARNINGS="ignore"
 RUN mkdir -p /app/models /app/data /app/output
 
 CMD ["/bin/bash"]
