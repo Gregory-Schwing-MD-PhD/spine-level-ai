@@ -15,10 +15,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install SPINEPS FIRST (let it resolve its own conflicts)
+# CRITICAL FIX: Force numpy 1.x before installing SPINEPS
+# SPINEPS requires numpy ^1.25.2 (which means >=1.25.2, <2.0)
+# Base image has numpy 2.2.6 which causes binary incompatibility
+RUN pip install --no-cache-dir --force-reinstall "numpy>=1.25.2,<2.0"
+
+# Install SPINEPS with numpy 1.x
 RUN pip install --no-cache-dir git+https://github.com/Hendrik-code/spineps.git
 
-# Then install our packages (without strict versions where possible)
+# Install our additional packages
 RUN pip install --no-cache-dir \
     pydicom \
     nibabel \
