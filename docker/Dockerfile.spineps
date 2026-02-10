@@ -15,9 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# CRITICAL FIX: Force numpy 1.x before installing SPINEPS
-# SPINEPS requires numpy ^1.25.2 (which means >=1.25.2, <2.0)
-# Base image has numpy 2.2.6 which causes binary incompatibility
+# CRITICAL: Force numpy 1.x BEFORE installing SPINEPS
 RUN pip install --no-cache-dir --force-reinstall "numpy>=1.25.2,<2.0"
 
 # Install SPINEPS with numpy 1.x
