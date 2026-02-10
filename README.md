@@ -29,17 +29,60 @@ Wrong-level spine surgery is a **"never event"** costing **$100K+ per case** and
 | **SpineNet** | Vertebra detection on X-ray | ❌ 2D only; poor soft tissue detail vs. MRI |
 | **Manual Counting** | Radiologist counts from T12 down | ❌ 5-15% error rate with LSTV; time-consuming |
 
-### What Makes This Different
+### What Makes This Different: A Two-Stage Solution
 
-**Spine Level AI** is purpose-built for **one thing**: preventing wrong-level surgery by solving the LSTV enumeration problem.
+**The Core Problem Explained:**
+- **Normal spine**: 5 lumbar vertebrae (L1→L5) sitting on sacrum (S1)
+- **LSTV spine**: L5 fuses to sacrum → looks like only 4 lumbar vertebrae exist
+- **Surgeon counts from bottom up**: "1, 2, 3, 4... this must be L4!" 
+- **Reality**: That's actually L5 fused to sacrum → surgeon operates on **wrong level**
 
-✅ **Automated LSTV screening** using SPINEPS → flags high-risk cases before labeling  
-✅ **Surgical-grade enumeration** from T12 rib → L5 transverse process → sacrum  
-✅ **Real-time intraoperative warnings** when LSTV detected  
-✅ **Lightweight YOLOv8 model** runs on standard hospital hardware (not research-only)  
-✅ **Docker-first deployment** works on any system (HPC, cloud, local GPU)  
+**Stage 1: SPINEPS (Data Pre-Filter)**
+- **Purpose**: Find training data efficiently
+- **What it does**: Segments vertebrae, numbers them, counts lumbar vertebrae
+- **Output**: Flags ~500 of 2,700 scans where count ≠ 5 OR L5-S1 fusion suspected
+- **Why this matters**: Saves 80% of manual screening time (you only label the "weird" cases)
 
-**This isn't research for research's sake** — it's a clinical decision support tool designed to prevent the #1 preventable surgical error in spine surgery.
+**Stage 2: YOLOv8 (The Clinical Tool You're Building)**
+- **Purpose**: Prevent wrong-level surgery in real patients
+- **What it detects**: Anatomical red flags that humans miss
+  - **T12 rib**: Definitive thoracic landmark (counting anchor point)
+  - **L5 transverse process**: When fused to sacrum, looks thick/square vs. pointy
+  - **Sacral ala**: Shows fusion pattern between L5 and sacrum
+- **Output**: 
+  ```
+  🚨 WARNING: 85% probability LSTV detected
+  ⚠️ Count vertebrae from T12 rib down before surgery
+  ```
+
+**Why YOLOv8 Over Existing Segmentation Tools:**
+
+| What SPINEPS/nnU-Net Do | What YOUR Model Does |
+|-------------------------|---------------------|
+| ✅ Segment vertebrae shapes | ✅ Detect surgical risk landmarks |
+| ✅ Count vertebrae | ✅ Warn when counting might be wrong |
+| ❌ Don't flag LSTV risk | ✅ Flag LSTV probability + severity |
+| ❌ Require manual enumeration verification | ✅ Automate verification checklist |
+| ❌ 5-10s inference (research-grade) | ✅ 10ms inference (OR-ready) |
+
+**The Clinical Workflow:**
+```
+WITHOUT your model:
+Radiologist report: "Degenerative disc at L4-L5"
+Surgeon in OR: "Okay, I'll operate on L4-L5"
+Reality: Patient has LSTV, should be L5-S1
+Result: WRONG LEVEL SURGERY ❌
+
+WITH your model:
+Your AI: "🚨 LSTV DETECTED - 85% probability"
+Surgeon: "Better order whole-spine MRI to count from T12"
+Surgeon confirms: T12→L1→L2→L3→L4→L5 (fused to sacrum)
+Surgeon: "Report meant L5-S1, not L4-L5"
+Result: CORRECT LEVEL SURGERY ✅
+```
+
+**In One Sentence:**  
+SPINEPS helps you find LSTV cases in 2,700 scans, but **YOUR YOLOv8 model** is what gets deployed in hospitals to warn surgeons before they cut into the wrong vertebra.
 
 ---
 
@@ -56,10 +99,10 @@ Wrong-level spine surgery is a **"never event"** costing **$100K+ per case** and
    - Sacral ala (fusion assessment)
    
 3. **Enumeration Algorithm**: Counts vertebrae using surgical logic:
-```
+   ```
    IF (L5 transverse fused to sacrum) OR (vertebra count ≠ 5):
        → FLAG as "LSTV Risk - Verify with Whole-Spine Imaging"
-```
+   ```
 
 ### Why YOLOv8 Over Segmentation Models?
 - **Speed**: 10ms inference vs. 5-10s for nnU-Net (intraoperative feasibility)
