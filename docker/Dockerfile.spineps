@@ -15,16 +15,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages - let roboflow control opencv version
+# Install SPINEPS FIRST (let it resolve its own conflicts)
+RUN pip install --no-cache-dir git+https://github.com/Hendrik-code/spineps.git
+
+# Then install our packages (without strict versions where possible)
 RUN pip install --no-cache-dir \
-    pydicom==2.4.4 \
-    nibabel==5.1.0 \
-    dicom2nifti==2.4.10 \
+    pydicom \
+    nibabel \
+    dicom2nifti \
     roboflow==1.1.9 \
-    tqdm==4.66.1 \
-    pandas==2.1.4 \
-    Pillow==10.1.0 \
-    git+https://github.com/Hendrik-code/spineps.git
+    tqdm \
+    pandas \
+    Pillow
 
 # Set SPINEPS model directory
 ENV SPINEPS_SEGMENTOR_MODELS=/app/models
