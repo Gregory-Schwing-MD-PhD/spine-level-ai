@@ -1,0 +1,38 @@
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+LABEL maintainer="go2432@wayne.edu"
+LABEL description="SPINEPS spine segmentation for LSTV screening"
+LABEL version="1.0"
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    git \
+    dcm2niix \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/constraints.txt /tmp/constraints.txt
+ENV PIP_CONSTRAINT=/tmp/constraints.txt
+
+RUN pip install --no-cache-dir --break-system-packages \
+    git+https://github.com/Hendrik-code/spineps.git@54fb222fe388efc23de6faec51125785880cee97 \
+    pydicom \
+    nibabel \
+    dicom2nifti \
+    roboflow==1.1.9 \
+    tqdm \
+    pandas \
+    Pillow \
+    opencv-python-headless
+
+RUN mkdir -p /app/models /app/data /app/output
+
+ENV SPINEPS_SEGMENTOR_MODELS=/app/models
+ENV SPINEPS_ENVIRONMENT_DIR=/app/models
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONWARNINGS="ignore"
+
+CMD ["/bin/bash"]

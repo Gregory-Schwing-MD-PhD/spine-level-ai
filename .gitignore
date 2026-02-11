@@ -1,0 +1,49 @@
+# Data
+data/raw/
+data/training/
+*.nii.gz
+*.dcm
+*.jpg
+*.png
+
+# Results
+results/
+wandb/
+runs/
+
+# Models
+spineps_models/
+*.pt
+*.pth
+*.onnx
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+*.out
+*.err
+
+# Temporary
+*.tmp
+*.bak
+*~
