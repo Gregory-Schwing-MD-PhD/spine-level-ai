@@ -16,14 +16,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy constraints file
-COPY docker/constraints.txt /tmp/constraints.txt
+COPY constraints.txt /tmp/constraints.txt
 
 # Set PIP_CONSTRAINT environment variable to FORCE numpy < 2.0
 ENV PIP_CONSTRAINT=/tmp/constraints.txt
 
 # Install all packages - pip will respect the constraint file
 # Using latest commit from main branch
-RUN pip install --no-cache-dir \
+RUN pip install \
     git+https://github.com/Hendrik-code/spineps.git@54fb222fe388efc23de6faec51125785880cee97 \
     pydicom \
     nibabel \
