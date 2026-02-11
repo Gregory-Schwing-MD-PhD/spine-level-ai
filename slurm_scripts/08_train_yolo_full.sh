@@ -26,7 +26,7 @@ PROJECT_DIR="$(pwd)"
 DATA_YAML="${PROJECT_DIR}/data/training/lstv_yolo_full/dataset.yaml"
 OUTPUT_DIR="${PROJECT_DIR}/runs/lstv/full"
 
-export WANDB_API_KEY="your_wandb_key_here"
+export WANDB_API_KEY="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"
 export WANDB_DIR="${PROJECT_DIR}/wandb"
 mkdir -p $WANDB_DIR
 
