@@ -10,7 +10,7 @@ echo "Building Preprocessing Container"
 echo "================================================================"
 
 docker build \
-    -f docker/Dockerfile.preprocessing \
+    -f Dockerfile.preprocessing \
     -t ${DOCKER_USERNAME}/${PROJECT_NAME}-preprocessing:latest \
     .
 

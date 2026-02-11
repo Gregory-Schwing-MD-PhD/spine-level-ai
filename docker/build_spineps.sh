@@ -10,7 +10,7 @@ echo "Building SPINEPS Container"
 echo "================================================================"
 
 docker build \
-    -f docker/Dockerfile.spineps \
+    -f Dockerfile.spineps \
     -t ${DOCKER_USERNAME}/${PROJECT_NAME}-spineps:latest \
     .
 

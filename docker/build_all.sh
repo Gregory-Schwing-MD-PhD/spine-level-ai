@@ -7,15 +7,15 @@ echo "================================================================"
 
 echo ""
 echo "[1/3] Building Preprocessing container..."
-bash docker/build_preprocessing.sh
+bash build_preprocessing.sh
 
 echo ""
 echo "[2/3] Building SPINEPS container..."
-bash docker/build_spineps.sh
+bash build_spineps.sh
 
 echo ""
 echo "[3/3] Building YOLOv11 container..."
-bash docker/build_yolo.sh
+bash build_yolo.sh
 
 echo ""
 echo "================================================================"

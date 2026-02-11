@@ -10,7 +10,7 @@ echo "Building YOLOv11 Container"
 echo "================================================================"
 
 docker build \
-    -f docker/Dockerfile.yolo \
+    -f Dockerfile.yolo \
     -t ${DOCKER_USERNAME}/${PROJECT_NAME}-yolo:latest \
     .
 
