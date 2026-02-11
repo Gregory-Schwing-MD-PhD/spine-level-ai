@@ -21,16 +21,16 @@ echo "✓ Preprocessing container ready: ${CACHE_DIR}/spine-level-ai-preprocessi
 echo ""
 echo "[2/3] Pulling SPINEPS container..."
 singularity pull --force \
-    ${CACHE_DIR}/spineps.sif \
-    docker://go2432/spineps-lstv-spineps:latest
+    ${CACHE_DIR}/spine-level-ai-spineps.sif \
+    docker://go2432/spine-level-ai-spineps:latest
 
 echo "✓ SPINEPS container ready: ${CACHE_DIR}/spineps.sif"
 
 echo ""
 echo "[3/3] Pulling YOLOv11 container..."
 singularity pull --force \
-    ${CACHE_DIR}/yolo.sif \
-    docker://go2432/spineps-lstv-yolo:latest
+    ${CACHE_DIR}/spine-level-ai-yolo.sif \
+    docker://go2432/spine-level-ai-yolo:latest
 
 echo "✓ YOLOv11 container ready: ${CACHE_DIR}/yolo.sif"
 
@@ -39,6 +39,6 @@ echo "================================================================"
 echo "All containers ready!"
 echo "================================================================"
 echo "Preprocessing: ${CACHE_DIR}/spine-level-ai-preprocessing.sif"
-echo "SPINEPS:       ${CACHE_DIR}/spineps.sif"
-echo "YOLOv11:       ${CACHE_DIR}/yolo.sif"
+echo "SPINEPS:       ${CACHE_DIR}/spine-level-ai-spineps.sif"
+echo "YOLOv11:       ${CACHE_DIR}/spine-level-ai-yolo.sif"
 echo "================================================================"

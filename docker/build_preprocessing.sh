@@ -9,14 +9,12 @@ echo "================================================================"
 echo "Building Preprocessing Container"
 echo "================================================================"
 
-docker build --no-cache \
+docker build \
     -f docker/Dockerfile.preprocessing \
-    -t ${DOCKER_USERNAME}/${PROJECT_NAME}-preprocessing:${VERSION} \
     -t ${DOCKER_USERNAME}/${PROJECT_NAME}-preprocessing:latest \
     .
 
 echo "Pushing to Docker Hub..."
-docker push ${DOCKER_USERNAME}/${PROJECT_NAME}-preprocessing:${VERSION}
 docker push ${DOCKER_USERNAME}/${PROJECT_NAME}-preprocessing:latest
 
 echo "================================================================"

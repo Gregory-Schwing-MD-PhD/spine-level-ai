@@ -53,8 +53,8 @@ mkdir -p $OUTPUT_DIR/logs
 mkdir -p $NIFTI_DIR
 
 DOCKER_USERNAME="go2432"
-CONTAINER="docker://${DOCKER_USERNAME}/spineps-lstv-spineps:latest"
-IMG_PATH="${NXF_SINGULARITY_CACHEDIR}/spineps.sif"
+CONTAINER="docker://${DOCKER_USERNAME}/spine-level-ai-spineps:latest"
+IMG_PATH="${NXF_SINGULARITY_CACHEDIR}/spine-level-ai-spineps.sif"
 
 if [[ ! -f "$IMG_PATH" ]]; then
     echo "Pulling SPINEPS container..."
