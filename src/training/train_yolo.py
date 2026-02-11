@@ -34,13 +34,16 @@ def train_yolo(data_yaml, model_size='n', epochs=100, batch_size=16,
     }
     
     if wandb_logging:
-        wandb.init(
-            project='lstv-detection',
-            name=f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            config=config,
-            save_code=True,
-        )
-    
+            wandb.init(
+                # This ensures it goes to your specific account/team
+                entity="gregory-schwing-md-phd", 
+                project='lstv-detection',
+                name=f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                config=config,
+                save_code=True,
+            )
+
+
     model_name = f'yolo11{model_size}.pt'
     print(f"\nLoading {model_name}...")
     print(f"Using YOLOv11:")
