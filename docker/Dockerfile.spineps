@@ -1,11 +1,12 @@
 FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 
 LABEL maintainer="go2432@wayne.edu"
-LABEL description="SPINEPS spine segmentation for LSTV screening"
-LABEL version="1.0"
+LABEL description="SPINEPS LSTV screening container"
+LABEL version="1.2"
 
 WORKDIR /app
 
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     libglib2.0-0 \
@@ -14,10 +15,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy constraints file
 COPY docker/constraints.txt /tmp/constraints.txt
+
+# Set PIP_CONSTRAINT environment variable to FORCE numpy < 2.0
 ENV PIP_CONSTRAINT=/tmp/constraints.txt
 
-RUN pip install --no-cache-dir --break-system-packages \
+# Install all packages - pip will respect the constraint file
+# Using latest commit from main branch
+RUN pip install --no-cache-dir \
     git+https://github.com/Hendrik-code/spineps.git@54fb222fe388efc23de6faec51125785880cee97 \
     pydicom \
     nibabel \
@@ -25,11 +31,12 @@ RUN pip install --no-cache-dir --break-system-packages \
     roboflow==1.1.9 \
     tqdm \
     pandas \
-    Pillow \
-    opencv-python-headless
+    Pillow
 
+# Create directories
 RUN mkdir -p /app/models /app/data /app/output
 
+# Set SPINEPS environment variables
 ENV SPINEPS_SEGMENTOR_MODELS=/app/models
 ENV SPINEPS_ENVIRONMENT_DIR=/app/models
 ENV PYTHONUNBUFFERED=1
