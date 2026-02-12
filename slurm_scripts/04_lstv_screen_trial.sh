@@ -28,7 +28,7 @@ export PATH="${CONDA_PREFIX}/bin:$PATH"
 unset JAVA_HOME
 
 which singularity
-export SINGULARITY_TMPDIR="${HOME}/singularity_tmp"
+#export SINGULARITY_TMPDIR="${HOME}/singularity_tmp"
 export XDG_RUNTIME_DIR="${HOME}/xdr"
 export NXF_SINGULARITY_CACHEDIR="${HOME}/singularity_cache"
 mkdir -p $XDG_RUNTIME_DIR $NXF_SINGULARITY_CACHEDIR $SINGULARITY_TMPDIR
