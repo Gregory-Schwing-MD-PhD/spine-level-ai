@@ -24,7 +24,7 @@ NIFTI_DIR="${PROJECT_DIR}/results/lstv_screening/full/nifti"
 SEG_DIR="${PROJECT_DIR}/results/lstv_screening/full/segmentations"
 OUTPUT_DIR="${PROJECT_DIR}/data/training/lstv_yolo_full"
 
-IMG_PATH="${HOME}/singularity_cache/yolo.sif"
+IMG_PATH="${HOME}/singularity_cache/spine-level-ai-yolo.sif"
 
 if [[ ! -f "$IMG_PATH" ]]; then
     echo "ERROR: YOLOv11 container not found!"

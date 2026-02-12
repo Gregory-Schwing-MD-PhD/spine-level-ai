@@ -31,7 +31,7 @@ export WANDB_API_KEY="wandb_v1_B2IPHC2NErupG3DRtFjTGdedmVI_ebRb4N6uSjvxSxJxyfP5P
 export WANDB_DIR="${PROJECT_DIR}/wandb"
 mkdir -p $WANDB_DIR
 
-IMG_PATH="${HOME}/singularity_cache/yolo.sif"
+IMG_PATH="${HOME}/singularity_cache/spine-level-ai-yolo.sif"
 
 if [[ ! -f "$IMG_PATH" ]]; then
     echo "ERROR: YOLOv11 container not found!"

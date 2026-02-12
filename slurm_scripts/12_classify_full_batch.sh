@@ -23,7 +23,7 @@ WEIGHTS="${PROJECT_DIR}/runs/lstv/full/weights/best.pt"
 IMAGE_DIR="${PROJECT_DIR}/results/lstv_screening/full/candidate_images"
 OUTPUT="${PROJECT_DIR}/results/inference/full_classifications.json"
 
-IMG_PATH="${HOME}/singularity_cache/yolo.sif"
+IMG_PATH="${HOME}/singularity_cache/spine-level-ai-yolo.sif"
 
 if [[ ! -f "$WEIGHTS" ]]; then
     echo "ERROR: Model weights not found at $WEIGHTS"

@@ -24,7 +24,7 @@ DATA_YAML="${PROJECT_DIR}/data/training/lstv_yolo_trial/dataset.yaml"
 OUTPUT_DIR="${PROJECT_DIR}/results/evaluation/trial"
 TEST_IMAGES="${PROJECT_DIR}/results/lstv_screening/trial/candidate_images"
 
-IMG_PATH="${HOME}/singularity_cache/yolo.sif"
+IMG_PATH="${HOME}/singularity_cache/spine-level-ai-yolo.sif"
 
 echo "Evaluating model..."
 echo "Weights: $WEIGHTS"

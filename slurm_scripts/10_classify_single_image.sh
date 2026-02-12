@@ -23,7 +23,7 @@ WEIGHTS="${PROJECT_DIR}/runs/lstv/trial/weights/best.pt"
 TEST_IMAGE="${PROJECT_DIR}/results/lstv_screening/trial/candidate_images/100206310.jpg"
 OUTPUT="${PROJECT_DIR}/results/inference/single_test.json"
 
-IMG_PATH="${HOME}/singularity_cache/yolo.sif"
+IMG_PATH="${HOME}/singularity_cache/spine-level-ai-yolo.sif"
 
 if [[ ! -f "$IMG_PATH" ]]; then
     echo "ERROR: YOLOv11 container not found!"
