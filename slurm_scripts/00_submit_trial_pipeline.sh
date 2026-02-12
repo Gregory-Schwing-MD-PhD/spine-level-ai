@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=24G
-#SBATCH --time=00:24:00
+#SBATCH --time=00:1:00
 #SBATCH --job-name=submit_trial_pipeline
 #SBATCH -o logs/submit_trial_pipeline_%j.out
 #SBATCH -e logs/submit_trial_pipeline_%j.err
