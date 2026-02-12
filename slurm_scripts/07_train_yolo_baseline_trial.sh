@@ -54,8 +54,8 @@ mkdir -p $WANDB_DIR
 
 # Container
 DOCKER_USERNAME="go2432"
-CONTAINER="docker://${DOCKER_USERNAME}/spineps-lstv-yolo:latest"
-IMG_PATH="${NXF_SINGULARITY_CACHEDIR}/yolo.sif"
+CONTAINER="docker://${DOCKER_USERNAME}/spine-level-ai-yolo:latest"
+IMG_PATH="${NXF_SINGULARITY_CACHEDIR}/spine-level-ai-yolo.sif"
 
 if [[ ! -f "$IMG_PATH" ]]; then
     echo "Pulling YOLOv11 container..."
