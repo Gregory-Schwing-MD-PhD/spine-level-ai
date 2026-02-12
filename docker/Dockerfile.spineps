@@ -1,45 +1,58 @@
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+# ================================================================
+# STAGE 1: Builder
+# ================================================================
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime AS builder
+
+WORKDIR /build
+
+# Create constraint file (only numpy - torch 2.3.1 already in base)
+RUN echo "numpy<2.0" > /tmp/constraints.txt
+ENV PIP_CONSTRAINT=/tmp/constraints.txt
+
+# Install git for cloning
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone your repository
+RUN git clone https://github.com/Gregory-Schwing-MD-PhD/spineps.git /build/spineps_source && \
+    cd /build/spineps_source && \
+    git checkout e78975c35544acf10c077e685cd4558c6884cd0e
+
+# Install SPINEPS with --user flag
+WORKDIR /build/spineps_source
+RUN pip install --no-cache-dir --user .
+
+# ================================================================
+# STAGE 2: Runtime (Minimal)
+# ================================================================
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
 
 LABEL maintainer="go2432@wayne.edu"
-LABEL description="SPINEPS LSTV screening container"
-LABEL version="1.2"
+LABEL description="SPINEPS LSTV screening container - Optimized"
+LABEL version="1.4-torch2.3"
 
 WORKDIR /app
 
-# Install system dependencies
+# Install runtime dependencies only
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     libglib2.0-0 \
-    git \
     dcm2niix \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# Copy constraints file
-COPY constraints.txt /tmp/constraints.txt
+# Copy installed packages from builder
+COPY --from=builder /root/.local /root/.local
 
-# Set PIP_CONSTRAINT environment variable to FORCE numpy < 2.0
-ENV PIP_CONSTRAINT=/tmp/constraints.txt
-
-# Install all packages - pip will respect the constraint file
-# Using latest commit from main branch
-RUN pip install \
-    git+https://github.com/Hendrik-code/spineps.git@54fb222fe388efc23de6faec51125785880cee97 \
-    pydicom \
-    nibabel \
-    dicom2nifti \
-    roboflow==1.1.9 \
-    tqdm \
-    pandas \
-    Pillow
+# Setup environment
+ENV PATH=/root/.local/bin:$PATH \
+    SPINEPS_SEGMENTOR_MODELS=/app/models \
+    SPINEPS_ENVIRONMENT_DIR=/app/models \
+    PYTHONUNBUFFERED=1 \
+    PYTHONWARNINGS="ignore"
 
 # Create directories
 RUN mkdir -p /app/models /app/data /app/output
-
-# Set SPINEPS environment variables
-ENV SPINEPS_SEGMENTOR_MODELS=/app/models
-ENV SPINEPS_ENVIRONMENT_DIR=/app/models
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONWARNINGS="ignore"
 
 CMD ["/bin/bash"]
