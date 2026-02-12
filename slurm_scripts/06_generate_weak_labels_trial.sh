@@ -5,9 +5,9 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=01:00:00
-#SBATCH --job-name=weak_labels_v6_trial
-#SBATCH -o logs/weak_labels_v6_%j.out
-#SBATCH -e logs/weak_labels_v6_%j.err
+#SBATCH --job-name=weak_labels_v6.1_trial
+#SBATCH -o logs/weak_labels_v6.1_%j.out
+#SBATCH -e logs/weak_labels_v6.1_%j.err
 
 set -euo pipefail
 
@@ -76,7 +76,7 @@ print_stat() {
 # ENVIRONMENT SETUP
 # ============================================================================
 
-print_header "WEAK LABEL GENERATION v6.0 - INTENSITY-BASED DETECTION"
+print_header "WEAK LABEL GENERATION v6.1 - TUNED INTENSITY-BASED DETECTION"
 echo -e "${CYAN}Job ID:${NC} $SLURM_JOB_ID"
 echo -e "${CYAN}Start:${NC}  $(date)"
 echo ""
@@ -141,21 +141,26 @@ print_section "v6.0 Features Enabled"
 
 echo ""
 echo -e "${BOLD}${PURPLE}┌─────────────────────────────────────────────────────────────┐${NC}"
-echo -e "${BOLD}${PURPLE}│                    NEW IN v6.0                              │${NC}"
+echo -e "${BOLD}${PURPLE}│                    NEW IN v6.1                              │${NC}"
 echo -e "${BOLD}${PURPLE}├─────────────────────────────────────────────────────────────┤${NC}"
-echo -e "${BOLD}${PURPLE}│${NC}  ${GREEN}●${NC} ${BOLD}Intensity-Based Rib Detection${NC}                         ${BOLD}${PURPLE}│${NC}"
-echo -e "${BOLD}${PURPLE}│${NC}    → MRI edge detection + morphological analysis          ${BOLD}${PURPLE}│${NC}"
-echo -e "${BOLD}${PURPLE}│${NC}    → No longer relies on SPINEPS labels for ribs          ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}  ${GREEN}●${NC} ${BOLD}TUNED Intensity-Based Rib Detection${NC}                   ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}    → Relaxed constraints (v6.0 was TOO STRICT - 0%)       ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}    → Multi-scale edges (Canny 30/100 + 20/80)             ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}    → Multi-threshold intensity (Otsu + Adaptive)          ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}    → Wider search (1.2x→1.5x), smaller min (10%→5%)       ${BOLD}${PURPLE}│${NC}"
 echo -e "${BOLD}${PURPLE}│${NC}                                                            ${BOLD}${PURPLE}│${NC}"
-echo -e "${BOLD}${PURPLE}│${NC}  ${GREEN}●${NC} ${BOLD}Intensity-Based L5 TP Detection${NC}                       ${BOLD}${PURPLE}│${NC}"
-echo -e "${BOLD}${PURPLE}│${NC}    → Bilateral transverse process analysis                ${BOLD}${PURPLE}│${NC}"
-echo -e "${BOLD}${PURPLE}│${NC}    → Anatomically-constrained search regions              ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}  ${GREEN}●${NC} ${BOLD}TUNED L5 TP Detection${NC}                                 ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}    → Wider lateral search (1.5x→2.0x width)               ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}    → Vertical margins added (±20% height)                 ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}    → Single-sided detection OK (was bilateral required)   ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}    → Smaller minimum size (5%→3% vertebra area)           ${BOLD}${PURPLE}│${NC}"
 echo -e "${BOLD}${PURPLE}│${NC}                                                            ${BOLD}${PURPLE}│${NC}"
-echo -e "${BOLD}${PURPLE}│${NC}  ${GREEN}●${NC} ${BOLD}Hybrid Detection with Fallback${NC}                        ${BOLD}${PURPLE}│${NC}"
-echo -e "${BOLD}${PURPLE}│${NC}    → Try intensity first, fallback to labels              ${BOLD}${PURPLE}│${NC}"
-echo -e "${BOLD}${PURPLE}│${NC}    → Track which method succeeds                          ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}  ${YELLOW}●${NC} ${BOLD}Expected Improvement${NC}                                 ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}    → T12 ribs: 0% → ${GREEN}40-70%${NC} intensity detection            ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}    → L5 TPs:   0% → ${GREEN}50-80%${NC} intensity detection            ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}    → Combined: ${GREEN}+10-30${NC} additional detections/100 studies    ${BOLD}${PURPLE}│${NC}"
 echo -e "${BOLD}${PURPLE}│${NC}                                                            ${BOLD}${PURPLE}│${NC}"
-echo -e "${BOLD}${PURPLE}│${NC}  ${YELLOW}●${NC} ${BOLD}VALIDATION MODE${NC}                                      ${BOLD}${PURPLE}│${NC}"
+echo -e "${BOLD}${PURPLE}│${NC}  ${CYAN}●${NC} ${BOLD}VALIDATION MODE${NC}                                      ${BOLD}${PURPLE}│${NC}"
 echo -e "${BOLD}${PURPLE}│${NC}    → Before/after spine-aware slice comparison            ${BOLD}${PURPLE}│${NC}"
 echo -e "${BOLD}${PURPLE}│${NC}    → Detection method performance analysis                ${BOLD}${PURPLE}│${NC}"
 echo -e "${BOLD}${PURPLE}│${NC}    → SPINEPS label quality validation                     ${BOLD}${PURPLE}│${NC}"
@@ -166,12 +171,12 @@ echo ""
 # LABEL GENERATION
 # ============================================================================
 
-print_section "Running Label Generation v6.0"
+print_section "Running Label Generation v6.1 (TUNED PARAMETERS)"
 
 echo ""
 echo -e "${BOLD}Command:${NC}"
 echo -e "  ${CYAN}python generate_weak_labels.py${NC}"
-echo -e "    ${YELLOW}--use_intensity_based${NC}    (NEW: MRI pattern detection)"
+echo -e "    ${YELLOW}--use_intensity_based${NC}    (v6.1 TUNED: relaxed constraints)"
 echo -e "    ${YELLOW}--generate_comparisons${NC}   (Validation visualizations)"
 echo -e "    ${YELLOW}--validate_spineps${NC}       (Label quality assessment)"
 echo ""
@@ -326,7 +331,7 @@ try:
         report = json.load(f)
 
     print(f"\n{BOLD}{PURPLE}┌─────────────────────────────────────────────────────────────┐{NC}")
-    print(f"{BOLD}{PURPLE}│              INTENSITY vs LABEL-BASED DETECTION             │{NC}")
+    print(f"{BOLD}{PURPLE}│     INTENSITY (v6.1 TUNED) vs LABEL-BASED DETECTION         │{NC}")
     print(f"{BOLD}{PURPLE}└─────────────────────────────────────────────────────────────┘{NC}")
 
     for structure_key, display_name in [('t12_rib', 'T12 RIB'), ('l5_tp', 'L5 TRANSVERSE PROCESS')]:

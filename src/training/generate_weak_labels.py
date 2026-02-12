@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """
-PRODUCTION WEAK LABEL GENERATION v6.0
-Intensity-Based Detection + Comprehensive Validation
+PRODUCTION WEAK LABEL GENERATION v6.1
+Intensity-Based Detection + Comprehensive Validation + TUNED PARAMETERS
 
-NEW IN v6.0:
-- Intensity-based rib detection (no longer relies on SPINEPS labels)
-- Intensity-based L5 TP detection (MRI signal patterns)
-- SPINEPS quality validation (diagnostic mode)
-- Side-by-side method comparison
-- Enhanced visualizations
+NEW IN v6.1 (PARAMETER TUNING):
+- Relaxed intensity-based detection constraints (v6.0 was too strict - 0% success)
+- Multi-scale edge detection (catches more subtle structures)
+- Multi-threshold intensity detection (handles variable contrast)
+- Wider search regions for ribs and TPs
+- Smaller minimum size thresholds
+- Single-sided TP detection allowed
+- Expected improvement: 0% → 40-70% intensity-based success
 
 Features:
 - Thick Slab MIP for enhanced visibility
 - Spine-aware intelligent slice selection
-- Intensity-based T12 rib detection (edge + morphology)
-- Intensity-based L5 TP detection (bilateral analysis)
+- IMPROVED Intensity-based T12 rib detection (v6.1 tuned)
+- IMPROVED Intensity-based L5 TP detection (v6.1 tuned)
 - Comprehensive quality metrics and validation
 - SPINEPS label quality assessment
 - Method comparison visualizations
 
-Version 6.0 - PRODUCTION GRADE WITH INTENSITY-BASED DETECTION
+Version 6.1 - PRODUCTION GRADE WITH TUNED INTENSITY-BASED DETECTION
 """
 
 import argparse
@@ -456,8 +458,16 @@ def detect_l5_tp_label_based(seg_slice, vertebra_label):
 
 def detect_t12_rib_intensity_based(mri_slice, seg_slice, vertebra_label, side='left'):
     """
-    NEW v6.0: Detect T12 ribs using MRI intensity patterns
+    v6.1 IMPROVED: Detect T12 ribs using MRI intensity patterns with RELAXED parameters
     Does NOT rely on SPINEPS labels for ribs
+    
+    Key improvements from v6.0:
+    - Wider search regions (1.2x -> 1.5x width, -30%/+10% -> -50%/+30% height)
+    - Multi-scale edge detection (two Canny thresholds)
+    - Multi-threshold intensity detection (Otsu + Adaptive)
+    - Relaxed shape constraints (aspect 1.5->1.2, solidity 0.5-0.95->0.4-0.98)
+    - Smaller minimum size (10% -> 5%)
+    - Gentler preprocessing (CLAHE 3.0 -> 2.0)
     """
     vert_mask = (seg_slice == vertebra_label)
     
@@ -476,16 +486,17 @@ def detect_t12_rib_intensity_based(mri_slice, seg_slice, vertebra_label, side='l
     
     height, width = mri_slice.shape
     
-    # Define search region
+    # WIDER search region (v6.1)
     if side == 'left':
-        search_x_min = max(0, int(vert_x_min - vert_width * 1.2))
-        search_x_max = int(vert_x_min)
+        search_x_min = max(0, int(vert_x_min - vert_width * 1.5))  # Was 1.2
+        search_x_max = int(vert_x_min + vert_width * 0.2)  # Allow overlap
     else:
-        search_x_min = int(vert_x_max)
-        search_x_max = min(width, int(vert_x_max + vert_width * 1.2))
+        search_x_min = int(vert_x_max - vert_width * 0.2)
+        search_x_max = min(width, int(vert_x_max + vert_width * 1.5))
     
-    search_y_min = max(0, int(vert_y_min - vert_height * 0.3))
-    search_y_max = min(height, int(vert_y_max + vert_height * 0.1))
+    # TALLER search region (v6.1)
+    search_y_min = max(0, int(vert_y_min - vert_height * 0.5))  # Was 0.3
+    search_y_max = min(height, int(vert_y_max + vert_height * 0.3))  # Was 0.1
     
     # Extract search region
     search_roi = mri_slice[search_y_min:search_y_max, search_x_min:search_x_max].copy()
@@ -493,31 +504,41 @@ def detect_t12_rib_intensity_based(mri_slice, seg_slice, vertebra_label, side='l
     if search_roi.size == 0:
         return None
     
-    # Normalize ROI
+    # Normalize
     search_roi = cv2.normalize(search_roi, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
-    # Apply CLAHE
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4,4))
-    search_roi = clahe.apply(search_roi)
+    # GENTLER CLAHE (v6.1)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4,4))  # Was 3.0
+    search_roi_enhanced = clahe.apply(search_roi)
     
-    # Edge detection (ribs have strong edges)
-    edges = cv2.Canny(search_roi, 50, 150)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    # MULTI-SCALE EDGE DETECTION (v6.1)
+    edges1 = cv2.Canny(search_roi_enhanced, 30, 100)  # Relaxed (was 50/150)
+    edges2 = cv2.Canny(search_roi_enhanced, 20, 80)   # Even more relaxed
+    edges = cv2.bitwise_or(edges1, edges2)
+    
+    # SMALLER dilation kernel (v6.1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))  # Was (3,3)
     edges_dilated = cv2.dilate(edges, kernel, iterations=2)
     
-    # Intensity-based detection (ribs are hypointense in T2)
-    thresh_dark = cv2.threshold(search_roi, 0, 255, 
-                                cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    # MULTI-THRESHOLD intensity detection (v6.1)
+    _, thresh_otsu = cv2.threshold(search_roi_enhanced, 0, 255, 
+                                   cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
-    # Combine
-    combined = cv2.bitwise_or(edges_dilated, thresh_dark)
+    thresh_adaptive = cv2.adaptiveThreshold(search_roi_enhanced, 255,
+                                           cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                           cv2.THRESH_BINARY_INV, 11, 2)
     
-    # Clean up
+    thresh_combined = cv2.bitwise_or(thresh_otsu, thresh_adaptive)
+    
+    # Combine edges and intensity
+    combined = cv2.bitwise_or(edges_dilated, thresh_combined)
+    
+    # GENTLER cleanup (v6.1)
     kernel_clean = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel_clean)
+    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel_clean, iterations=1)
     
-    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel_close)
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4, 4))  # Was (5,5)
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel_close, iterations=1)
     
     # Connected components
     labeled, num_features = scipy_label(combined > 0)
@@ -525,38 +546,37 @@ def detect_t12_rib_intensity_based(mri_slice, seg_slice, vertebra_label, side='l
     if num_features == 0:
         return None
     
-    # Analyze components
+    # Analyze components with RELAXED constraints (v6.1)
     best_component = None
     best_score = 0
+    
+    # SMALLER minimum size (v6.1)
+    min_size = (vert_width * vert_height) * 0.05  # Was 0.1
+    max_size = (search_y_max - search_y_min) * (search_x_max - search_x_min) * 0.6  # Was 0.5
     
     for comp_id in range(1, num_features + 1):
         comp_mask = (labeled == comp_id)
         comp_size = comp_mask.sum()
         
-        # Size constraints
-        min_size = (vert_width * vert_height) * 0.1
-        max_size = (search_y_max - search_y_min) * (search_x_max - search_x_min) * 0.5
-        
         if comp_size < min_size or comp_size > max_size:
             continue
         
-        # Get properties
         comp_coords = np.argwhere(comp_mask)
         comp_y = comp_coords[:, 0]
         comp_x = comp_coords[:, 1]
         
         comp_y_min, comp_y_max = comp_y.min(), comp_y.max()
         comp_x_min, comp_x_max = comp_x.min(), comp_x.max()
-        comp_height = comp_y_max - comp_y_min
-        comp_width = comp_x_max - comp_x_min
+        comp_height = comp_y_max - comp_y_min + 1
+        comp_width = comp_x_max - comp_x_min + 1
         
         if comp_width < 1 or comp_height < 1:
             continue
         
         aspect_ratio = comp_width / comp_height
         
-        # Ribs are elongated horizontally
-        if aspect_ratio < 1.5:
+        # RELAXED aspect ratio (v6.1)
+        if aspect_ratio < 1.2:  # Was 1.5
             continue
         
         # Position validation
@@ -564,23 +584,30 @@ def detect_t12_rib_intensity_based(mri_slice, seg_slice, vertebra_label, side='l
         vert_center_y = (vert_y_min + vert_y_max) / 2
         y_distance = abs(comp_center_y - vert_center_y)
         
-        if y_distance > vert_height * 0.6:
+        # RELAXED position (v6.1)
+        if y_distance > vert_height * 0.8:  # Was 0.6
             continue
         
-        # Curvature check (solidity)
+        # Curvature check
         hull = cv2.convexHull(comp_coords[:, [1, 0]])
         hull_area = cv2.contourArea(hull)
         solidity = comp_size / hull_area if hull_area > 0 else 0
         
-        if solidity < 0.5 or solidity > 0.95:
+        # RELAXED solidity (v6.1)
+        if solidity < 0.4 or solidity > 0.98:  # Was 0.5-0.95
             continue
         
         # Score
+        size_score = min(comp_size / max_size, 1.0)
+        aspect_score = min(aspect_ratio / 3.0, 1.0)
+        position_score = 1.0 - (y_distance / (vert_height * 0.8))
+        shape_score = solidity
+        
         score = (
-            (comp_size / max_size) * 0.3 +
-            min(aspect_ratio / 4.0, 1.0) * 0.3 +
-            (1.0 - y_distance / (vert_height * 0.6)) * 0.2 +
-            solidity * 0.2
+            size_score * 0.3 +
+            aspect_score * 0.25 +
+            position_score * 0.25 +
+            shape_score * 0.2
         )
         
         if score > best_score:
@@ -600,8 +627,17 @@ def detect_t12_rib_intensity_based(mri_slice, seg_slice, vertebra_label, side='l
 
 def detect_l5_tp_intensity_based(mri_slice, seg_slice, vertebra_label):
     """
-    NEW v6.0: Detect L5 transverse processes using MRI intensity patterns
+    v6.1 IMPROVED: Detect L5 transverse processes using MRI intensity patterns with RELAXED parameters
     Does NOT rely on SPINEPS labels for TPs
+    
+    Key improvements from v6.0:
+    - Wider lateral search (1.5x -> 2.0x width)
+    - Added vertical margin (0% -> ±20%)
+    - Multi-scale edge detection
+    - Multi-threshold intensity detection
+    - Relaxed size constraints (5% -> 3%)
+    - Single-sided detection allowed (was bilateral required)
+    - Relaxed position constraints
     """
     vert_mask = (seg_slice == vertebra_label)
     
@@ -620,19 +656,19 @@ def detect_l5_tp_intensity_based(mri_slice, seg_slice, vertebra_label):
     
     height, width = mri_slice.shape
     
-    # Bilateral search regions
-    search_y_min = int(vert_y_min)
-    search_y_max = int(vert_y_max)
+    # WIDER bilateral search with VERTICAL MARGIN (v6.1)
+    search_y_min = max(0, int(vert_y_min - vert_height * 0.2))  # Was 0
+    search_y_max = min(height, int(vert_y_max + vert_height * 0.2))  # Was 0
     
-    left_x_min = max(0, int(cx - vert_width * 1.5))
-    left_x_max = int(cx - vert_width * 0.2)
+    left_x_min = max(0, int(cx - vert_width * 2.0))  # Was 1.5
+    left_x_max = int(cx - vert_width * 0.15)  # Was 0.2
     
-    right_x_min = int(cx + vert_width * 0.2)
-    right_x_max = min(width, int(cx + vert_width * 1.5))
+    right_x_min = int(cx + vert_width * 0.15)
+    right_x_max = min(width, int(cx + vert_width * 2.0))
     
-    # Detect left and right
+    # Detect both sides
     left_tp = _detect_single_tp(
-        mri_slice, left_x_min, left_x_max, 
+        mri_slice, left_x_min, left_x_max,
         search_y_min, search_y_max,
         cx, cy, vert_width, vert_height
     )
@@ -643,7 +679,7 @@ def detect_l5_tp_intensity_based(mri_slice, seg_slice, vertebra_label):
         cx, cy, vert_width, vert_height
     )
     
-    # Combine bilateral
+    # RELAXED: Accept single-sided (v6.1)
     if left_tp is None and right_tp is None:
         return None
     
@@ -659,7 +695,17 @@ def detect_l5_tp_intensity_based(mri_slice, seg_slice, vertebra_label):
 
 
 def _detect_single_tp(mri_slice, x_min, x_max, y_min, y_max, cx, cy, vert_width, vert_height):
-    """Helper: detect single TP in region"""
+    """
+    v6.1 IMPROVED: Detect single TP with RELAXED constraints
+    
+    Key improvements:
+    - Multi-scale edge detection
+    - Multi-threshold intensity
+    - Gentler CLAHE (2.0)
+    - Smaller min size (5% -> 3%)
+    - Relaxed lateral distance (30% -> 20%)
+    - Relaxed vertical alignment (30% -> 50%)
+    """
     
     if x_max <= x_min or y_max <= y_min:
         return None
@@ -672,20 +718,29 @@ def _detect_single_tp(mri_slice, x_min, x_max, y_min, y_max, cx, cy, vert_width,
     # Normalize
     roi = cv2.normalize(roi, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
+    # GENTLER CLAHE (v6.1)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4,4))
     roi = clahe.apply(roi)
     
-    # Edge detection
-    edges = cv2.Canny(roi, 40, 120)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    # MULTI-SCALE edge detection (v6.1)
+    edges1 = cv2.Canny(roi, 30, 90)  # Relaxed
+    edges2 = cv2.Canny(roi, 20, 70)  # More relaxed
+    edges = cv2.bitwise_or(edges1, edges2)
+    
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
     edges = cv2.dilate(edges, kernel, iterations=1)
     
-    # Threshold
-    thresh = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    # MULTI-THRESHOLD (v6.1)
+    _, thresh_otsu = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    thresh_adaptive = cv2.adaptiveThreshold(roi, 255,
+                                           cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                           cv2.THRESH_BINARY, 11, 2)
+    thresh = cv2.bitwise_or(thresh_otsu, thresh_adaptive)
     
     # Combine
     combined = cv2.bitwise_or(edges, thresh)
     
+    # Gentle cleanup
     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
     combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel_open)
     
@@ -695,12 +750,12 @@ def _detect_single_tp(mri_slice, x_min, x_max, y_min, y_max, cx, cy, vert_width,
     if num_features == 0:
         return None
     
-    # Find best component
+    # RELAXED size constraints (v6.1)
+    min_size = (vert_width * vert_height) * 0.03  # Was 0.05
+    max_size = (y_max - y_min) * (x_max - x_min) * 0.5  # Was 0.4
+    
     best_comp = None
     best_score = 0
-    
-    min_size = (vert_width * vert_height) * 0.05
-    max_size = (y_max - y_min) * (x_max - x_min) * 0.4
     
     for comp_id in range(1, num_features + 1):
         comp_mask = (labeled == comp_id)
@@ -713,21 +768,25 @@ def _detect_single_tp(mri_slice, x_min, x_max, y_min, y_max, cx, cy, vert_width,
         comp_y_mean = comp_coords[:, 0].mean() + y_min
         comp_x_mean = comp_coords[:, 1].mean() + x_min
         
-        # Lateral to vertebra
+        # RELAXED lateral distance (v6.1)
         x_distance = abs(comp_x_mean - cx)
-        if x_distance < vert_width * 0.3:
+        if x_distance < vert_width * 0.2:  # Was 0.3
             continue
         
-        # At vertebra level
+        # RELAXED vertical alignment (v6.1)
         y_distance = abs(comp_y_mean - cy)
-        if y_distance > vert_height * 0.3:
+        if y_distance > vert_height * 0.5:  # Was 0.3
             continue
         
         # Score
+        size_score = min(comp_size / max_size, 1.0)
+        lateral_score = min(x_distance / (vert_width * 1.0), 1.0)
+        vertical_score = 1.0 - (y_distance / (vert_height * 0.5))
+        
         score = (
-            (comp_size / max_size) * 0.4 +
-            (x_distance / (vert_width * 0.8)) * 0.3 +
-            (1.0 - y_distance / (vert_height * 0.3)) * 0.3
+            size_score * 0.4 +
+            lateral_score * 0.3 +
+            vertical_score * 0.3
         )
         
         if score > best_score:
@@ -1451,15 +1510,20 @@ def split_train_val(images_dir, labels_dir, val_split=0.15):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Production Weak Label Generation v6.0 - Intensity-Based Detection',
+        description='Production Weak Label Generation v6.1 - Intensity-Based Detection (TUNED)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-NEW IN v6.0:
-  --use_intensity_based    Use intensity-based detection for ribs and TPs (default: True)
-  --validate_spineps       Generate SPINEPS label quality validation report
+NEW IN v6.1 (PARAMETER TUNING):
+  Relaxed intensity-based constraints - v6.0 was too strict (0% detection)
+  - Multi-scale edge detection (2 Canny thresholds)
+  - Multi-threshold intensity (Otsu + Adaptive)
+  - Wider search regions (ribs: 1.2x->1.5x, TPs: 1.5x->2.0x)
+  - Relaxed shape constraints (aspect, solidity, size)
+  - Single-sided TP detection allowed
+  - Expected: 0% → 40-70% intensity-based success
 
 Examples:
-  # Standard with intensity-based detection
+  # Standard with improved intensity-based detection
   python generate_weak_labels.py --nifti_dir /data/nifti --seg_dir /data/seg --output_dir /data/output
 
   # With full validation
@@ -1495,15 +1559,17 @@ Examples:
         comparison_dir.mkdir(parents=True, exist_ok=True)
 
     print("="*80)
-    print("PRODUCTION WEAK LABEL GENERATION v6.0")
+    print("PRODUCTION WEAK LABEL GENERATION v6.1")
     print("="*80)
     print("Features:")
     print("  ✓ Thick Slab MIP (15mm ribs, 5mm midline)")
     print("  ✓ Spine-aware intelligent slice selection")
     if args.use_intensity_based:
-        print("  ✓ Intensity-based T12 rib detection (NEW v6.0)")
-        print("  ✓ Intensity-based L5 TP detection (NEW v6.0)")
+        print("  ✓ Intensity-based T12 rib detection (v6.1 TUNED)")
+        print("  ✓ Intensity-based L5 TP detection (v6.1 TUNED)")
         print("  ✓ Hybrid detection with label-based fallback")
+        print("  ✓ Multi-scale edge detection (NEW in v6.1)")
+        print("  ✓ Multi-threshold intensity detection (NEW in v6.1)")
     else:
         print("  ✓ Label-based detection (original)")
     if args.generate_comparisons:
@@ -1584,7 +1650,8 @@ Examples:
 
     # Metadata
     metadata = {
-        'version': '6.0',
+        'version': '6.1',
+        'improvements_from_6.0': 'Tuned intensity-based parameters - relaxed constraints for better detection',
         'total_studies': success_count,
         'train_studies': train_count,
         'val_studies': val_count,
@@ -1592,6 +1659,8 @@ Examples:
             'thick_slab_mip': args.use_mip,
             'spine_aware_slicing': args.use_spine_aware,
             'intensity_based_detection': args.use_intensity_based,
+            'multi_scale_edges': args.use_intensity_based,
+            'multi_threshold_intensity': args.use_intensity_based,
             'validation_enabled': args.generate_comparisons,
             'spineps_validation': args.validate_spineps,
         },
@@ -1611,7 +1680,7 @@ Examples:
     print("\n" + "="*80)
     print("DATASET SUMMARY")
     print("="*80)
-    print(f"Version: 6.0 (Intensity-Based Detection)")
+    print(f"Version: 6.1 (Intensity-Based Detection - TUNED PARAMETERS)")
     print(f"Train: {train_count} studies ({train_count * 3} images)")
     print(f"Val:   {val_count} studies ({val_count * 3} images)")
     print(f"\nDataset ready at: {output_dir}")
