@@ -1,11 +1,25 @@
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+# ================================================================
+# YOLOv11 Container - Optimized & Unified
+# ================================================================
+# CHANGED: Updated to match SPINEPS base exactly for layer sharing
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
 
 LABEL maintainer="go2432@wayne.edu"
 LABEL description="YOLOv11 training for LSTV detection"
-LABEL version="2.0"
+LABEL version="2.2-unified-torch2.3"
 
 WORKDIR /app
 
+# 1. 🛑 SAFETY NET: Unified Constraints
+# - numpy<2.0: Fixes the crash
+# - torch==2.3.1: Matches base image (prevents download)
+# - torchvision==0.18.1: Matches torch 2.3.1 (prevents download)
+RUN echo "numpy<2.0" > /tmp/constraints.txt && \
+    echo "torch==2.3.1" >> /tmp/constraints.txt && \
+    echo "torchvision==0.18.1" >> /tmp/constraints.txt
+ENV PIP_CONSTRAINT=/tmp/constraints.txt
+
+# 2. System Dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     libglib2.0-0 \
@@ -14,6 +28,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
+# 3. Install Python Dependencies
+# We use --break-system-packages because we are in a container and want
+# to install alongside the system torch in /opt/conda.
 RUN pip install --no-cache-dir --break-system-packages \
     ultralytics>=8.3.0 \
     wandb \
@@ -28,9 +45,10 @@ RUN pip install --no-cache-dir --break-system-packages \
     pandas \
     tqdm
 
+# 4. Setup Directories & Environment
 RUN mkdir -p /app/data /app/runs /app/output
 
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONWARNINGS="ignore"
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONWARNINGS="ignore"
 
 CMD ["/bin/bash"]
