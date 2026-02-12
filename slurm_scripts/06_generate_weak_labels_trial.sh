@@ -215,9 +215,10 @@ print_header "VALIDATION ANALYSIS"
 if [[ -f "$OUTPUT_DIR/spine_aware_metrics_report.json" ]]; then
     print_section "1. Spine-Aware Slice Selection Performance"
 
-    python3 << 'PYEOF'
+    python3 << PYEOF
 import json
 import sys
+import os
 
 BOLD = '\033[1m'
 GREEN = '\033[0;32m'
@@ -228,7 +229,8 @@ RED = '\033[0;31m'
 NC = '\033[0m'
 
 try:
-    with open('${OUTPUT_DIR}/spine_aware_metrics_report.json') as f:
+    output_dir = '${OUTPUT_DIR}'
+    with open(f'{output_dir}/spine_aware_metrics_report.json') as f:
         stats = json.load(f)
 
     total = stats['total_cases']
@@ -305,7 +307,7 @@ fi
 if [[ -f "$OUTPUT_DIR/detection_method_comparison.json" ]]; then
     print_section "2. Detection Method Comparison (v6.0)"
 
-    python3 << 'PYEOF'
+    python3 << PYEOF
 import json
 import sys
 
@@ -319,7 +321,8 @@ PURPLE = '\033[0;35m'
 NC = '\033[0m'
 
 try:
-    with open('${OUTPUT_DIR}/detection_method_comparison.json') as f:
+    output_dir = '${OUTPUT_DIR}'
+    with open(f'{output_dir}/detection_method_comparison.json') as f:
         report = json.load(f)
 
     print(f"\n{BOLD}{PURPLE}┌─────────────────────────────────────────────────────────────┐{NC}")
@@ -402,7 +405,7 @@ fi
 if [[ -f "$OUTPUT_DIR/weak_label_quality_report.json" ]]; then
     print_section "3. Class Distribution & Quality Metrics"
 
-    python3 << 'PYEOF'
+    python3 << PYEOF
 import json
 import sys
 
@@ -414,7 +417,8 @@ RED = '\033[0;31m'
 NC = '\033[0m'
 
 try:
-    with open('${OUTPUT_DIR}/weak_label_quality_report.json') as f:
+    output_dir = '${OUTPUT_DIR}'
+    with open(f'{output_dir}/weak_label_quality_report.json') as f:
         report = json.load(f)
 
     print(f"\n{BOLD}{CYAN}Dataset Statistics:{NC}")
@@ -527,9 +531,12 @@ fi
 
 print_header "FINAL RECOMMENDATIONS"
 
-python3 << 'PYEOF'
+OUTPUT_DIR_FOR_PYTHON="${OUTPUT_DIR}"
+
+python3 << PYEOF
 import json
 import sys
+import os
 from pathlib import Path
 
 BOLD = '\033[1m'
