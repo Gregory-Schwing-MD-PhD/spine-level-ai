@@ -17,6 +17,29 @@ echo "Job ID: $SLURM_JOB_ID"
 echo "Start time: $(date)"
 echo "================================================================"
 
+# ==============================================================================
+# ENVIRONMENT SETUP
+# ==============================================================================
+export CONDA_PREFIX="${HOME}/mambaforge/envs/nextflow"
+export PATH="${CONDA_PREFIX}/bin:$PATH"
+unset JAVA_HOME
+
+# Cache directories
+export XDG_RUNTIME_DIR="${HOME}/xdr"
+export NXF_SINGULARITY_CACHEDIR="${HOME}/singularity_cache"
+mkdir -p "$XDG_RUNTIME_DIR" "$NXF_SINGULARITY_CACHEDIR"
+
+# Clean environment
+export NXF_SINGULARITY_HOME_MOUNT=true
+unset LD_LIBRARY_PATH PYTHONPATH R_LIBS R_LIBS_USER R_LIBS_SITE
+
+if ! command -v singularity &> /dev/null; then
+    echo "ERROR: Singularity not found!"
+    exit 1
+fi
+echo "✓ Singularity found: $(which singularity)"
+# ==============================================================================
+
 PROJECT_DIR="$(pwd)"
 NIFTI_DIR="${PROJECT_DIR}/results/lstv_screening/trial/nifti"
 SEG_DIR="${PROJECT_DIR}/results/lstv_screening/trial/segmentations"
@@ -25,7 +48,7 @@ OUTPUT_DIR="${PROJECT_DIR}/data/training/lstv_yolo_trial"
 IMG_PATH="${HOME}/singularity_cache/spine-level-ai-yolo.sif"
 
 if [[ ! -f "$IMG_PATH" ]]; then
-    echo "ERROR: YOLOv11 container not found!"
+    echo "ERROR: YOLOv11 container not found at $IMG_PATH"
     echo "Run: ./setup_containers.sh"
     exit 1
 fi
@@ -38,6 +61,11 @@ fi
 
 NIFTI_COUNT=$(find $NIFTI_DIR -name "*.nii.gz" | wc -l)
 SEG_COUNT=$(find $SEG_DIR -name "*_seg.nii.gz" | wc -l)
+
+# --- THE FIX: CREATE OUTPUT DIRECTORY BEFORE BINDING ---
+echo "Creating output directory: $OUTPUT_DIR"
+mkdir -p "$OUTPUT_DIR"
+# -------------------------------------------------------
 
 echo "Generating weak labels with SPINE-AWARE slice selection..."
 echo "Input NIfTI:   $NIFTI_DIR ($NIFTI_COUNT files)"
@@ -83,25 +111,31 @@ if [[ -f "$OUTPUT_DIR/spine_aware_metrics_report.json" ]]; then
     echo "SPINE-AWARE SLICE SELECTION METRICS:"
     python3 << PYEOF
 import json
-with open('$OUTPUT_DIR/spine_aware_metrics_report.json') as f:
-    stats = json.load(f)
+import sys
 
-print(f"Total cases:          {stats['total_cases']}")
-print(f"Spine-aware success:  {stats['spine_aware_cases']} ({stats['spine_aware_cases']/stats['total_cases']*100:.1f}%)")
-print(f"\nOffset from geometric center:")
-print(f"  Mean:   {stats['offset_statistics']['mean_mm']:.1f} ± {stats['offset_statistics']['std_mm']:.1f} mm")
-print(f"  Median: {stats['offset_statistics']['median_mm']:.1f} mm")
-print(f"  Max:    {stats['offset_statistics']['max_mm']:.1f} mm")
-print(f"\nSpine density improvement:")
-print(f"  Mean:   {stats['improvement_statistics']['mean_ratio']:.2f}x")
-print(f"  Median: {stats['improvement_statistics']['median_ratio']:.2f}x")
-print(f"\nCorrection magnitude:")
-for key, value in stats['correction_needed'].items():
-    pct = stats['correction_needed_percent'][key]
-    print(f"  {key}: {value} cases ({pct:.1f}%)")
+try:
+    with open('$OUTPUT_DIR/spine_aware_metrics_report.json') as f:
+        stats = json.load(f)
 
-print(f"\n🔥 JUSTIFICATION: {stats['correction_needed']['medium_correction_6_15_voxels'] + stats['correction_needed']['large_correction_16plus_voxels']} cases")
-print(f"   ({(stats['correction_needed_percent']['medium_correction_6_15_voxels'] + stats['correction_needed_percent']['large_correction_16plus_voxels']):.1f}%) needed significant correction!")
+    print(f"Total cases:          {stats['total_cases']}")
+    print(f"Spine-aware success:  {stats['spine_aware_cases']} ({stats['spine_aware_cases']/stats['total_cases']*100:.1f}%)")
+    print(f"\nOffset from geometric center:")
+    print(f"  Mean:   {stats['offset_statistics']['mean_mm']:.1f} ± {stats['offset_statistics']['std_mm']:.1f} mm")
+    print(f"  Median: {stats['offset_statistics']['median_mm']:.1f} mm")
+    print(f"  Max:    {stats['offset_statistics']['max_mm']:.1f} mm")
+    print(f"\nSpine density improvement:")
+    print(f"  Mean:   {stats['improvement_statistics']['mean_ratio']:.2f}x")
+    print(f"  Median: {stats['improvement_statistics']['median_ratio']:.2f}x")
+    print(f"\nCorrection magnitude:")
+    for key, value in stats['correction_needed'].items():
+        pct = stats['correction_needed_percent'][key]
+        print(f"  {key}: {value} cases ({pct:.1f}%)")
+
+    print(f"\n🔥 JUSTIFICATION: {stats['correction_needed']['medium_correction_6_15_voxels'] + stats['correction_needed']['large_correction_16plus_voxels']} cases")
+    print(f"   ({(stats['correction_needed_percent']['medium_correction_6_15_voxels'] + stats['correction_needed_percent']['large_correction_16plus_voxels']):.1f}%) needed significant correction!")
+
+except Exception as e:
+    print(f"Error parsing metrics: {e}")
 PYEOF
     echo ""
 fi
@@ -126,38 +160,44 @@ echo "================================================================"
 
 python3 << PYEOF
 import json
-with open('$OUTPUT_DIR/spine_aware_metrics_report.json') as f:
-    stats = json.load(f)
+import sys
 
-total = stats['total_cases']
-needs_correction = stats['correction_needed']['small_correction_1_5_voxels'] + \
-                  stats['correction_needed']['medium_correction_6_15_voxels'] + \
-                  stats['correction_needed']['large_correction_16plus_voxels']
+try:
+    with open('$OUTPUT_DIR/spine_aware_metrics_report.json') as f:
+        stats = json.load(f)
 
-pct_needs_correction = (needs_correction / total * 100) if total > 0 else 0
-mean_improvement = stats['improvement_statistics']['mean_ratio']
+    total = stats['total_cases']
+    needs_correction = stats['correction_needed']['small_correction_1_5_voxels'] + \
+                      stats['correction_needed']['medium_correction_6_15_voxels'] + \
+                      stats['correction_needed']['large_correction_16plus_voxels']
 
-print(f"Trial Results ({total} cases):")
-print(f"  - {pct_needs_correction:.1f}% of cases needed correction")
-print(f"  - Mean spine visibility improved {mean_improvement:.2f}x")
-print(f"  - Median offset: {stats['offset_statistics']['median_mm']:.1f}mm")
-print()
+    pct_needs_correction = (needs_correction / total * 100) if total > 0 else 0
+    mean_improvement = stats['improvement_statistics']['mean_ratio']
 
-if pct_needs_correction > 50:
-    print("✅ STRONG JUSTIFICATION: >50% of cases need correction")
-    print("   Spine-aware slicing is ESSENTIAL for full run!")
-elif pct_needs_correction > 30:
-    print("✅ GOOD JUSTIFICATION: >30% of cases need correction")
-    print("   Spine-aware slicing recommended for full run")
-else:
-    print("⚠️  WEAK JUSTIFICATION: <30% of cases need correction")
-    print("   Spine-aware slicing may not be critical, but still beneficial")
+    print(f"Trial Results ({total} cases):")
+    print(f"  - {pct_needs_correction:.1f}% of cases needed correction")
+    print(f"  - Mean spine visibility improved {mean_improvement:.2f}x")
+    print(f"  - Median offset: {stats['offset_statistics']['median_mm']:.1f}mm")
+    print()
 
-print()
-print("Estimated impact on T12 rib detection:")
-improvement_pct = (mean_improvement - 1.0) * 100
-print(f"  Expected improvement: +{improvement_pct:.1f}% in spine visibility")
-print(f"  Likely T12 rib AP improvement: +{improvement_pct*0.5:.1f}% to +{improvement_pct:.1f}%")
+    if pct_needs_correction > 50:
+        print("✅ STRONG JUSTIFICATION: >50% of cases need correction")
+        print("   Spine-aware slicing is ESSENTIAL for full run!")
+    elif pct_needs_correction > 30:
+        print("✅ GOOD JUSTIFICATION: >30% of cases need correction")
+        print("   Spine-aware slicing recommended for full run")
+    else:
+        print("⚠️  WEAK JUSTIFICATION: <30% of cases need correction")
+        print("   Spine-aware slicing may not be critical, but still beneficial")
+
+    print()
+    print("Estimated impact on T12 rib detection:")
+    improvement_pct = (mean_improvement - 1.0) * 100
+    print(f"  Expected improvement: +{improvement_pct:.1f}% in spine visibility")
+    print(f"  Likely T12 rib AP improvement: +{improvement_pct*0.5:.1f}% to +{improvement_pct:.1f}%")
+
+except Exception as e:
+    print(f"Error calculating recommendation: {e}")
 PYEOF
 
 echo ""
