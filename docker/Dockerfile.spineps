@@ -5,8 +5,14 @@ FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime AS builder
 
 WORKDIR /build
 
-# Create constraint file (only numpy - torch 2.3.1 already in base)
-RUN echo "numpy<2.0" > /tmp/constraints.txt
+# 🛑 CRITICAL SAFETY NET: Prevent the "Version Mismatch" bloat
+# Base image has torch==2.3.1+cu121, but pip sees this as different from "2.3.1"
+# Without constraints, pip will reinstall torch from PyPI, adding ~10GB!
+RUN echo "numpy<2.0" > /tmp/constraints.txt && \
+    echo "torch==2.3.1" >> /tmp/constraints.txt && \
+    echo "torchvision==0.18.1" >> /tmp/constraints.txt
+
+# This makes constraints ACTIVE - pip will accept 2.3.1+cu121 as satisfying 2.3.1
 ENV PIP_CONSTRAINT=/tmp/constraints.txt
 
 # Install git for cloning
@@ -17,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Clone your repository
 RUN git clone https://github.com/Gregory-Schwing-MD-PhD/spineps.git /build/spineps_source && \
     cd /build/spineps_source && \
-    git checkout e78975c35544acf10c077e685cd4558c6884cd0e
+    git checkout 54fb222fe388efc23de6faec51125785880cee97
 
 # Install SPINEPS with --user flag
 WORKDIR /build/spineps_source
@@ -30,7 +36,7 @@ FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
 
 LABEL maintainer="go2432@wayne.edu"
 LABEL description="SPINEPS LSTV screening container - Optimized"
-LABEL version="1.4-torch2.3"
+LABEL version="1.4-torch2.3-fixed"
 
 WORKDIR /app
 
