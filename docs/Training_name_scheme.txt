@@ -1,0 +1,34 @@
+#!/bin/bash
+# TRAINING RUN NAMING SCHEME GUIDE
+# 
+# Directory structure: runs/lstv/<experiment_name>/
+#
+# EXPERIMENT NAMES:
+# ==================
+#
+# BASELINE (Weak Labels Only):
+#   - trial_baseline       : 5 studies, weak labels only (validation run)
+#   - full_baseline        : 500 studies, weak labels only (production baseline)
+#
+# REFINED (Weak + Human Labels):
+#   - trial_refined        : ~50 studies, weak + human labels (test refinement)
+#   - full_refined         : 500 studies, weak + human labels (FINAL MODEL)
+#
+# COMPARISON:
+#   runs/lstv/
+#   ├── trial_baseline/          # Quick validation
+#   ├── full_baseline/           # Production baseline (for comparison)
+#   ├── trial_refined/           # Test human refinement effectiveness
+#   └── full_refined/            # FINAL production model
+#
+# This allows easy comparison:
+#   - trial_baseline vs trial_refined   (does human help on small data?)
+#   - full_baseline vs full_refined     (final performance gain)
+#   - trial_baseline vs full_baseline   (does more data help?)
+#
+# DATA SOURCES:
+# =============
+#   - trial_baseline:  data/training/lstv_yolo_trial/dataset.yaml
+#   - full_baseline:   data/training/lstv_yolo_full/dataset.yaml
+#   - trial_refined:   data/training/lstv_yolo_trial_refined/dataset.yaml (if testing)
+#   - full_refined:    data/training/lstv_yolo_refined/dataset.yaml
