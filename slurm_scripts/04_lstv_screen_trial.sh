@@ -23,15 +23,22 @@ echo "================================================================"
 
 nvidia-smi
 
+# --- Updated Singularity Temp Setup ---
+export SINGULARITY_TMPDIR="/tmp/${USER}_job_${SLURM_JOB_ID}"
+export XDG_RUNTIME_DIR="$SINGULARITY_TMPDIR/runtime"
+export NXF_SINGULARITY_CACHEDIR="${HOME}/singularity_cache"
+
+mkdir -p "$SINGULARITY_TMPDIR" "$XDG_RUNTIME_DIR" "$NXF_SINGULARITY_CACHEDIR"
+
+# Cleanup temp files on compute node when job finishes or fails
+trap 'rm -rf "$SINGULARITY_TMPDIR"' EXIT
+# --------------------------------------
+
 export CONDA_PREFIX="${HOME}/mambaforge/envs/nextflow"
 export PATH="${CONDA_PREFIX}/bin:$PATH"
 unset JAVA_HOME
 
 which singularity
-#export SINGULARITY_TMPDIR="${HOME}/singularity_tmp"
-export XDG_RUNTIME_DIR="${HOME}/xdr"
-export NXF_SINGULARITY_CACHEDIR="${HOME}/singularity_cache"
-mkdir -p $XDG_RUNTIME_DIR $NXF_SINGULARITY_CACHEDIR $SINGULARITY_TMPDIR
 
 export NXF_SINGULARITY_HOME_MOUNT=true
 unset LD_LIBRARY_PATH
