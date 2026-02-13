@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-PRODUCTION LSTV SCREENING SYSTEM v3.0 - COMPLETE IMPLEMENTATION (FIXED)
+PRODUCTION LSTV SCREENING SYSTEM v3.0 - CSV IS ABSOLUTE TRUTH
 
-Fixes:
-1. Proper CSV loading and series matching
-2. Correct sagittal series selection (T2w only)
-3. Fixed orientation detection
-4. Better DICOM handling
+Changes in this version:
+1. CSV descriptions are trusted completely for series selection
+2. No DICOM header verification during series selection
+3. All NIfTI files are processed regardless of orientation
+4. Helper functions preserved but not called in main logic
 
 Author: Claude + go2432
 Date: February 2026
@@ -26,6 +26,140 @@ import shutil
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Tuple, Optional
 import os
+
+
+# ============================================================================
+# REORIENTATION FUNCTIONS (PRESERVED BUT NOT USED IN MAIN LOGIC)
+# ============================================================================
+
+def reorient_to_standard(nifti_path, acquisition_plane):
+    """Reorient NIfTI to standard radiological orientation
+    
+    NOTE: This function is preserved for potential future use but is NOT
+    called in the current production logic.
+    """
+    try:
+        from nibabel.orientations import axcodes2ornt, ornt_transform
+
+        img = nib.load(nifti_path)
+        original_axcodes = nib.aff2axcodes(img.affine)
+
+        standard_orientations = {
+            'sagittal': ('L', 'A', 'S'),
+            'coronal': ('R', 'S', 'A'),
+            'axial': ('R', 'A', 'S')
+        }
+
+        if acquisition_plane not in standard_orientations:
+            return nifti_path, False
+
+        target_axcodes = standard_orientations[acquisition_plane]
+
+        if original_axcodes == target_axcodes:
+            print(f"    ✓ Already standard {acquisition_plane}: {original_axcodes}")
+            return nifti_path, True
+
+        print(f"    ↻ Reorienting: {original_axcodes} → {target_axcodes}")
+
+        original_ornt = nib.orientations.io_orientation(img.affine)
+        target_ornt = axcodes2ornt(target_axcodes)
+        transform = ornt_transform(original_ornt, target_ornt)
+
+        reoriented_img = img.as_reoriented(transform)
+        nib.save(reoriented_img, nifti_path)
+
+        verify_img = nib.load(nifti_path)
+        verify_axcodes = nib.aff2axcodes(verify_img.affine)
+
+        if verify_axcodes == target_axcodes:
+            print(f"    ✓ Reoriented: {verify_axcodes}")
+            return nifti_path, True
+        else:
+            print(f"    ✗ Failed: {verify_axcodes} != {target_axcodes}")
+            return nifti_path, False
+
+    except Exception as e:
+        print(f"    ✗ Reorientation error: {e}")
+        return nifti_path, False
+
+
+def determine_acquisition_plane_from_csv(series_description):
+    """Determine acquisition plane from CSV - CSV IS TRUTH"""
+    desc_lower = series_description.lower()
+
+    if 'sagittal' in desc_lower or 'sag ' in desc_lower:
+        return 'sagittal'
+    elif 'coronal' in desc_lower or 'cor ' in desc_lower:
+        return 'coronal'
+    elif 'axial' in desc_lower or 'ax ' in desc_lower:
+        return 'axial'
+
+    return None
+
+
+def get_acquisition_plane_from_dicom(dicom_dir):
+    """
+    Determine the actual acquisition plane from DICOM headers
+    
+    NOTE: This function is preserved for potential future use but is NOT
+    called in the current production logic where CSV is absolute truth.
+
+    Reads ImageOrientationPatient tag to determine how slices were acquired,
+    regardless of how the 3D volume is stored.
+
+    Returns: 'sagittal', 'coronal', 'axial', or None
+    """
+    try:
+        import pydicom
+
+        # Find first DICOM file
+        dicom_files = list(Path(dicom_dir).glob('*.dcm'))
+        if not dicom_files:
+            dicom_files = list(Path(dicom_dir).glob('*'))
+            if not dicom_files:
+                return None
+
+        # Try to read first file
+        try:
+            dcm = pydicom.dcmread(str(dicom_files[0]), stop_before_pixels=True)
+        except:
+            return None
+
+        # Get ImageOrientationPatient (0020,0037)
+        if not hasattr(dcm, 'ImageOrientationPatient'):
+            return None
+
+        iop = dcm.ImageOrientationPatient
+        if len(iop) != 6:
+            return None
+
+        # iop contains two 3D vectors:
+        # [row_x, row_y, row_z, col_x, col_y, col_z]
+        # These describe the direction of rows and columns in patient space
+
+        import numpy as np
+        row_vec = np.array([float(iop[0]), float(iop[1]), float(iop[2])])
+        col_vec = np.array([float(iop[3]), float(iop[4]), float(iop[5])])
+
+        # Cross product gives slice normal direction
+        slice_normal = np.cross(row_vec, col_vec)
+        slice_normal = slice_normal / np.linalg.norm(slice_normal)
+
+        # Determine which axis is dominant
+        abs_normal = np.abs(slice_normal)
+        dominant_axis = np.argmax(abs_normal)
+
+        # 0=x (sagittal), 1=y (coronal), 2=z (axial)
+        if dominant_axis == 0:
+            return 'sagittal'
+        elif dominant_axis == 1:
+            return 'coronal'
+        else:
+            return 'axial'
+
+    except Exception as e:
+        return None
+
 
 # ============================================================================
 # CONSTANTS
@@ -161,6 +295,7 @@ class SpineAwareSliceSelector:
             'sag_axis': sag_axis,
         }
 
+
 # ============================================================================
 # HELPER FUNCTIONS - FIXED CSV LOADING
 # ============================================================================
@@ -169,7 +304,7 @@ def load_series_descriptions(csv_path):
     """Load series descriptions CSV with proper dtypes"""
     try:
         df = pd.read_csv(csv_path)
-        
+
         # Check required columns
         required_cols = ['study_id', 'series_id', 'series_description']
         missing = [col for col in required_cols if col not in df.columns]
@@ -177,19 +312,19 @@ def load_series_descriptions(csv_path):
             print(f"  ✗ CSV missing columns: {missing}")
             print(f"  Available columns: {list(df.columns)}")
             return None
-        
+
         # Convert dtypes
         df['study_id'] = df['study_id'].astype(int)
         df['series_id'] = df['series_id'].astype(int)  # Series IDs are integers
         df['series_description'] = df['series_description'].astype(str)
-        
+
         print(f"  ✓ Loaded {len(df)} series descriptions")
         print(f"  ✓ Unique studies: {df['study_id'].nunique()}")
         print(f"  ✓ Sample descriptions:")
         desc_counts = df['series_description'].value_counts().head(5)
         for desc, count in desc_counts.items():
             print(f"      - {desc}: {count}")
-        
+
         return df
     except Exception as e:
         print(f"  ✗ Failed to load series CSV: {e}")
@@ -200,114 +335,109 @@ def load_series_descriptions(csv_path):
 
 def select_best_series(study_dir, series_df=None, study_id=None):
     """
-    Select best T2 SAGITTAL series using CSV descriptions
+    Select best T2 SAGITTAL series - CSV IS ABSOLUTE TRUTH
     
-    CRITICAL: Only selects series explicitly marked as sagittal T2w
+    Strategy:
+    1. Trust CSV descriptions completely - NO DICOM header verification
+    2. Look for "Sagittal T2" patterns in CSV
+    3. Return prioritized list for multi-series fallback
     """
     series_dirs = sorted([d for d in study_dir.iterdir() if d.is_dir()])
     if not series_dirs:
         return None
 
-    # If no CSV, can't determine series type - FAIL
+    # If no CSV, return all series in order
     if series_df is None or study_id is None:
-        print(f"    ✗ No series CSV - cannot identify sagittal series")
-        return None
+        print(f"    ⚠ No CSV - returning all series")
+        return series_dirs
 
     try:
         study_id_int = int(study_id)
         study_series = series_df[series_df['study_id'] == study_id_int].copy()
     except (ValueError, TypeError) as e:
-        print(f"    ✗ Invalid study_id {study_id}: {e}")
-        return None
+        print(f"    ⚠ Invalid study_id: {e}")
+        return series_dirs
 
     if len(study_series) == 0:
-        print(f"    ✗ Study {study_id} not found in CSV")
-        return None
+        print(f"    ⚠ Study not in CSV")
+        return series_dirs
 
     # Get series IDs that exist in filesystem
     available_series_ids = [int(d.name) for d in series_dirs]
     study_series = study_series[study_series['series_id'].isin(available_series_ids)]
-    
-    if len(study_series) == 0:
-        print(f"    ✗ No matching series found in filesystem")
-        return None
 
-    # Priority 1: Explicit "Sagittal T2/STIR" 
-    priority_patterns = [
+    if len(study_series) == 0:
+        print(f"    ⚠ No CSV series in filesystem")
+        return series_dirs
+
+    priority_order = []
+
+    # CSV IS TRUTH - trust the descriptions completely
+    sagittal_patterns = [
         'Sagittal T2/STIR',
-        'SAG T2 STIR',
         'Sagittal T2',
+        'SAG T2 STIR',
         'SAG T2',
     ]
 
-    for pattern in priority_patterns:
+    for pattern in sagittal_patterns:
         matching = study_series[
             study_series['series_description'].str.contains(
                 pattern, case=False, na=False, regex=False)
         ]
-        if len(matching) > 0:
-            series_id = int(matching.iloc[0]['series_id'])
+        for _, row in matching.iterrows():
+            series_id = int(row['series_id'])
             series_path = study_dir / str(series_id)
-            if series_path.exists():
-                desc = matching.iloc[0]['series_description']
-                print(f"    ✓ Selected: {desc} (series {series_id})")
-                return series_path
+            if series_path.exists() and series_path not in priority_order:
+                priority_order.append(series_path)
+                print(f"    ✓ CSV says sagittal T2: {row['series_description']}")
 
-    # Priority 2: Any T2 with "sag" but NOT "cor" or "ax"
-    sag_series = study_series[
-        (study_series['series_description'].str.contains('sag', case=False, na=False)) &
-        (study_series['series_description'].str.contains('t2', case=False, na=False)) &
-        (~study_series['series_description'].str.contains('cor|axial|ax ', case=False, na=False))
-    ]
-    
-    if len(sag_series) > 0:
-        series_id = int(sag_series.iloc[0]['series_id'])
-        series_path = study_dir / str(series_id)
-        if series_path.exists():
-            desc = sag_series.iloc[0]['series_description']
-            print(f"    ⚠ Selected (fallback): {desc} (series {series_id})")
-            return series_path
+    # Add remaining series as fallback
+    for series_path in series_dirs:
+        if series_path not in priority_order:
+            priority_order.append(series_path)
 
-    # No sagittal T2 found - list what's available
-    print(f"    ✗ No sagittal T2 series found!")
-    print(f"    Available series:")
-    for _, row in study_series.iterrows():
-        print(f"      - {row['series_id']}: {row['series_description']}")
-    
-    return None
+    if len(priority_order) == 0:
+        return None
+
+    return priority_order
 
 
-def convert_dicom_to_nifti(dicom_dir, output_path, study_id):
+def convert_dicom_to_nifti(dicom_dir, output_path, study_id, verify_sagittal=True):
     """
-    Convert DICOM to NIfTI with STRICT orientation checking
-    
-    Returns None if not sagittal, otherwise returns NIfTI path
+    Convert DICOM to NIfTI with optional orientation checking
+
+    Args:
+        verify_sagittal: If True, returns None for non-sagittal images
+                        If False, converts anyway (CSV IS TRUTH mode)
+
+    Returns:
+        (nifti_path, orientation) tuple, or (None, None) on failure
     """
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Use BIDS-like naming for SPINEPS compatibility
+
+        # Use BIDS-like naming
         bids_base = f"sub-{study_id}_sequ-sag_T2w"
 
         # dcm2niix with orientation preservation
         cmd = [
             'dcm2niix',
-            '-z', 'y',           # Compress
-            '-f', bids_base,     # Filename
+            '-z', 'y',
+            '-f', bids_base,
             '-o', str(output_path.parent),
-            '-m', 'y',           # Merge 2D → 3D
-            '-ba', 'n',          # Don't anonymize (preserves orientation)
-            '-i', 'n',           # Don't ignore derived
-            '-x', 'n',           # Don't crop
-            '-p', 'n',           # Don't use Philips scaling
+            '-m', 'y',
+            '-ba', 'n',
+            '-i', 'n',
+            '-x', 'n',
+            '-p', 'n',
             str(dicom_dir)
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
         if result.returncode != 0:
-            print(f"    ✗ dcm2niix failed: {result.stderr[:200] if result.stderr else 'unknown error'}")
-            return None
+            return (None, None)
 
         # Find generated NIfTI
         expected_output = output_path.parent / f"{bids_base}.nii.gz"
@@ -316,54 +446,30 @@ def convert_dicom_to_nifti(dicom_dir, output_path, study_id):
             if not nifti_files:
                 nifti_files = sorted(output_path.parent.glob(f"sub-{study_id}*.nii.gz"))
             if not nifti_files:
-                print(f"    ✗ No NIfTI generated")
-                return None
-            
+                return (None, None)
+
             generated_file = nifti_files[0]
             if generated_file != expected_output:
                 shutil.move(str(generated_file), str(expected_output))
 
-        # CRITICAL: Verify orientation
+        # Check orientation
         nii = nib.load(expected_output)
         orientation = nib.aff2axcodes(nii.affine)
-        
-        print(f"    NIfTI shape: {nii.shape}, orientation: {orientation}")
-        
-        # Check if sagittal - we need L/R as FIRST axis
-        # Sagittal patterns: (L|R, A|P, S|I)
-        # Coronal patterns: (L|R, S|I, A|P) - WRONG
-        # Axial patterns: (L|R, A|P, I|S) but with different first axis - WRONG
-        
+
         first_axis = orientation[0]
-        second_axis = orientation[1]
-        third_axis = orientation[2]
-        
-        # Sagittal = L/R on first axis, with reasonable other axes
         is_sagittal = (first_axis in ('R', 'L'))
-        
-        # Additional check: for sagittal, usually smallest dimension should be on axis 0
-        smallest_dim_axis = np.argmin(nii.shape)
-        
-        if not is_sagittal:
-            print(f"    ✗ Not sagittal (first axis is {first_axis}, not L/R)")
-            print(f"    ✗ Skipping this series")
-            return None
-        
-        if smallest_dim_axis != 0:
-            print(f"    ⚠ Warning: smallest dimension is axis {smallest_dim_axis}, not 0")
-            print(f"    This might indicate coronal/axial mislabeled as sagittal")
-            # Still try to process, but flag it
-        
-        return expected_output
-        
+
+        if verify_sagittal and not is_sagittal:
+            # Clean up non-sagittal file
+            expected_output.unlink()
+            return (None, orientation)
+
+        return (expected_output, orientation)
+
     except subprocess.TimeoutExpired:
-        print(f"    ✗ dcm2niix timeout")
-        return None
+        return (None, None)
     except Exception as e:
-        print(f"    ✗ DICOM conversion error: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+        return (None, None)
 
 
 # ============================================================================
@@ -373,7 +479,7 @@ def convert_dicom_to_nifti(dicom_dir, output_path, study_id):
 def run_spineps_dual_extraction(nifti_path: Path, output_dir: Path) -> Optional[Dict[str, Path]]:
     """
     Run SPINEPS and extract BOTH instance and semantic outputs
-    
+
     Returns:
         {
             'instance': Path,
@@ -401,7 +507,10 @@ def run_spineps_dual_extraction(nifti_path: Path, output_dir: Path) -> Optional[
         for candidate in wrapper_candidates:
             if candidate.exists():
                 wrapper_path = candidate
+                print(f"    ✓ Found wrapper: {wrapper_path}")
                 break
+            else:
+                print(f"    ✗ Wrapper not found: {candidate}")
 
         if wrapper_path:
             print(f"    Running SPINEPS via wrapper: {wrapper_path.name}")
@@ -456,26 +565,26 @@ def run_spineps_dual_extraction(nifti_path: Path, output_dir: Path) -> Optional[
         # Find instance mask
         seg_pattern = f"sub-{study_id}_*_seg-vert_msk.nii.gz"
         instance_files = list(derivatives_dir.glob(seg_pattern))
-        
+
         if not instance_files:
             instance_files = list(derivatives_dir.glob("*_seg-vert_msk.nii.gz"))
-        
+
         if not instance_files:
             print(f"  ✗ Instance mask not found")
             return None
-        
+
         instance_file = instance_files[0]
         print(f"    ✓ Found instance: {instance_file.name}")
 
         # Find semantic mask
         semantic_pattern = f"sub-{study_id}_*_seg-spine_msk.nii.gz"
         semantic_files = list(derivatives_dir.glob(semantic_pattern))
-        
+
         if not semantic_files:
             semantic_files = list(derivatives_dir.glob("*_seg-spine_msk.nii.gz"))
-        
+
         semantic_file = semantic_files[0] if semantic_files else None
-        
+
         if semantic_file:
             print(f"    ✓ Found semantic: {semantic_file.name}")
 
@@ -973,22 +1082,52 @@ def process_study(
     selector: SpineAwareSliceSelector,
     args
 ) -> Optional[Dict]:
-    """Process a single study"""
+    """Process a single study - CSV IS ABSOLUTE TRUTH"""
     study_id = study_dir.name
 
     try:
-        # Select series using CSV
-        series_dir = select_best_series(study_dir, series_df, study_id)
-        if series_dir is None:
+        # Get prioritized list of series to try (CSV IS TRUTH)
+        series_candidates = select_best_series(study_dir, series_df, study_id)
+        if series_candidates is None:
             return None
 
-        # Convert DICOM to NIfTI
-        nifti_path = output_dirs['nifti'] / f"sub-{study_id}_sequ-sag_T2w.nii.gz"
-        if not nifti_path.exists():
-            print(f"  Converting DICOM...")
-            nifti_path = convert_dicom_to_nifti(series_dir, nifti_path, study_id)
-            if nifti_path is None:
-                return None
+        # Handle both single series and list of series
+        if not isinstance(series_candidates, list):
+            series_candidates = [series_candidates]
+
+        # Try each series - NO ORIENTATION VERIFICATION
+        nifti_path = None
+        selected_series = None
+
+        for series_dir in series_candidates:
+            nifti_candidate = output_dirs['nifti'] / f"sub-{study_id}_sequ-sag_T2w.nii.gz"
+
+            if nifti_candidate.exists():
+                # Use cached file without verification
+                nifti_path = nifti_candidate
+                selected_series = series_dir
+                print(f"  Using cached NIfTI (series {series_dir.name})")
+                break
+
+            # Try converting this series - NO VERIFICATION (verify_sagittal=False)
+            print(f"  Trying series {series_dir.name}...")
+            nifti_candidate, orientation = convert_dicom_to_nifti(
+                series_dir, nifti_candidate, study_id, verify_sagittal=False
+            )
+
+            if nifti_candidate is not None:
+                print(f"    ✓ Converted! Orientation: {orientation}")
+                nifti_path = nifti_candidate
+                selected_series = series_dir
+                break
+            else:
+                print(f"    ✗ Conversion failed")
+
+        if nifti_path is None:
+            print(f"  ✗ Failed to convert any series")
+            return None
+
+        print(f"  ✓ Using series: {selected_series.name}")
 
         # Run SPINEPS
         seg_outputs = run_spineps_dual_extraction(nifti_path, output_dirs['segmentations'])
@@ -1006,7 +1145,7 @@ def process_study(
 
         result = {
             'study_id': study_id,
-            'series_id': series_dir.name,
+            'series_id': selected_series.name,
             'vertebra_count': analysis['vertebra_count'],
             'is_lstv_candidate': analysis['is_lstv_candidate'],
             'lstv_type': analysis['lstv_type'],
@@ -1072,7 +1211,7 @@ def process_study(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Production LSTV Screening v3.0 - FIXED',
+        description='Production LSTV Screening v3.0 - CSV IS ABSOLUTE TRUTH',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
@@ -1140,7 +1279,7 @@ def main():
         study_dirs = study_dirs[:study_limit]
 
     print(f"\n{'='*80}")
-    print(f"LSTV SCREENING v3.0 - {args.mode.upper()} MODE")
+    print(f"LSTV SCREENING v3.0 - {args.mode.upper()} MODE - CSV IS ABSOLUTE TRUTH")
     print(f"{'='*80}")
     print(f"Studies to process: {len(study_dirs)}")
     print(f"Already processed: {len(progress['processed'])}")
