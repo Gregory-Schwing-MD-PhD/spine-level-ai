@@ -241,7 +241,7 @@ PURPLE = '\033[0;35m'
 NC = '\033[0m'
 
 try:
-    output_dir = '${OUTPUT_DIR}'
+    output_dir = r'${OUTPUT_DIR}'
     with open(f'{output_dir}/progress.json') as f:
         progress = json.load(f)
 
@@ -289,10 +289,10 @@ try:
 
     if medium > 0:
         print(f"\n{BOLD}NEXT STEPS - Manual Review:{NC}")
-        print(f"  1. View QA images: ls ${output_dir}/qa_images/")
+        print(f"  1. View QA images: ls {output_dir}/qa_images/")
         print(f"  2. Review {medium} MEDIUM confidence cases")
         print(f"  3. Upload verified cases to Roboflow")
-    
+
     print()
 
 except Exception as e:
