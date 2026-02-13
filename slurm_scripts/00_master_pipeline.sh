@@ -108,6 +108,14 @@ PROJECT_DIR="$(pwd)"
 DATA_DIR="${PROJECT_DIR}/data/raw/train_images"
 SERIES_CSV="${PROJECT_DIR}/data/raw/train_series_descriptions.csv"
 
+# Validate series CSV exists
+if [[ ! -f "$SERIES_CSV" ]]; then
+    print_error "Series CSV not found: ${SERIES_CSV}"
+    print_error "This file is REQUIRED for identifying sagittal T2 series"
+    exit 1
+fi
+print_success "Series CSV: ${SERIES_CSV}"
+
 # Pipeline stage directories
 STAGE_BASE="${PROJECT_DIR}/results/lstv_pipeline_v3"
 DIAGNOSTIC_DIR="${STAGE_BASE}/01_diagnostic"
@@ -168,6 +176,7 @@ else
         --bind "${DIAGNOSTIC_DIR}:/data/output:rw" \
         --bind "${MODELS_CACHE}:/app/models:rw" \
         --bind "${MODELS_CACHE}:/opt/conda/lib/python3.10/site-packages/spineps/models:rw" \
+        --bind "$(dirname $SERIES_CSV):/data/raw:ro" \
         --env SPINEPS_SEGMENTOR_MODELS=/app/models \
         --env SPINEPS_ENVIRONMENT_DIR=/app/models \
         --pwd /work \
@@ -176,6 +185,7 @@ else
             --mode diagnostic \
             --input_dir /data/input \
             --output_dir /data/output \
+            --series_csv /data/raw/train_series_descriptions.csv \
             --roboflow_key SKIP \
             --confidence_threshold 0.5
 
@@ -194,20 +204,20 @@ PROGRESS_FILE="${DIAGNOSTIC_DIR}/progress.json"
 if [[ -f "$PROGRESS_FILE" ]]; then
     echo ""
     echo -e "${BOLD}Diagnostic Results:${NC}"
-    
+
     SEMANTIC_COUNT=$(python3 -c "import json; p=json.load(open('${PROGRESS_FILE}')); print(len(p.get('semantic_available', [])))" 2>/dev/null || echo "0")
     SEMANTIC_MISSING=$(python3 -c "import json; p=json.load(open('${PROGRESS_FILE}')); print(len(p.get('semantic_missing', [])))" 2>/dev/null || echo "0")
     TOTAL=$(python3 -c "import json; p=json.load(open('${PROGRESS_FILE}')); print(len(p.get('processed', [])))" 2>/dev/null || echo "0")
-    
+
     if [ "$TOTAL" -gt 0 ]; then
         SEMANTIC_PCT=$(python3 -c "print(int(${SEMANTIC_COUNT} / ${TOTAL} * 100))")
-        
+
         echo -e "  Total processed:       ${TOTAL}"
         echo -e "  Semantic available:    ${SEMANTIC_COUNT}"
         echo -e "  Semantic missing:      ${SEMANTIC_MISSING}"
         echo -e "  Availability:          ${SEMANTIC_PCT}%"
         echo ""
-        
+
         if [ "$SEMANTIC_PCT" -ge 80 ]; then
             print_success "Excellent! Semantic labels available (${SEMANTIC_PCT}%)."
             print_info "Will use semantic rib-density optimization for parasagittal slices."
@@ -224,7 +234,7 @@ if [[ -f "$PROGRESS_FILE" ]]; then
             USE_SEMANTIC_OPT="no"
             EXPECTED_RIB_DETECTION="60-70%"
         fi
-        
+
         echo -e "  Expected rib detection: ${EXPECTED_RIB_DETECTION}"
         echo ""
     else
@@ -250,19 +260,13 @@ else
     echo "  Output: ${TRIAL_DIR}"
     echo ""
 
-    # Add series CSV if available
-    SERIES_CSV_ARG=""
-    if [[ -f "$SERIES_CSV" ]]; then
-        SERIES_CSV_ARG="--series_csv /data/raw/train_series_descriptions.csv"
-    fi
-
     singularity exec --nv \
         --bind "${PROJECT_DIR}:/work" \
         --bind "${DATA_DIR}:/data/input:ro" \
         --bind "${TRIAL_DIR}:/data/output:rw" \
         --bind "${MODELS_CACHE}:/app/models:rw" \
         --bind "${MODELS_CACHE}:/opt/conda/lib/python3.10/site-packages/spineps/models:rw" \
-        --bind "$(dirname $SERIES_CSV):/data/raw" \
+        --bind "$(dirname $SERIES_CSV):/data/raw:ro" \
         --env SPINEPS_SEGMENTOR_MODELS=/app/models \
         --env SPINEPS_ENVIRONMENT_DIR=/app/models \
         --pwd /work \
@@ -270,8 +274,8 @@ else
         python /work/src/screening/lstv_screen_production_COMPLETE.py \
             --mode trial \
             --input_dir /data/input \
-            ${SERIES_CSV_ARG} \
             --output_dir /data/output \
+            --series_csv /data/raw/train_series_descriptions.csv \
             --limit 50 \
             --roboflow_key SKIP \
             --confidence_threshold 0.7
@@ -301,25 +305,25 @@ import sys
 try:
     with open('${TRIAL_PROGRESS}') as f:
         progress = json.load(f)
-    
+
     df = pd.read_csv('${TRIAL_RESULTS}')
-    
+
     total = len(progress.get('processed', []))
     lstv_candidates = len(progress.get('flagged', []))
     high_conf = len(progress.get('high_confidence', []))
     medium_conf = len(progress.get('medium_confidence', []))
     low_conf = len(progress.get('low_confidence', []))
-    
+
     print(f"  Studies processed:     {total}")
     print(f"  LSTV candidates:       {lstv_candidates} ({lstv_candidates/max(total,1)*100:.1f}%)")
     print(f"  High confidence:       {high_conf}")
     print(f"  Medium confidence:     {medium_conf}")
     print(f"  Low confidence:        {low_conf}")
-    
+
     if lstv_candidates > 0:
         avg_conf = df[df['is_lstv_candidate'] == True]['confidence_score'].mean()
         print(f"  Average confidence:    {avg_conf:.2f}")
-    
+
     # Check if we should proceed
     if lstv_candidates >= 5:  # At least 5 LSTV candidates in 50 studies
         print("\n✓ Trial results acceptable")
@@ -368,19 +372,13 @@ else
     echo "  Estimated time: 4-6 hours"
     echo ""
 
-    # Add series CSV if available
-    SERIES_CSV_ARG=""
-    if [[ -f "$SERIES_CSV" ]]; then
-        SERIES_CSV_ARG="--series_csv /data/raw/train_series_descriptions.csv"
-    fi
-
     singularity exec --nv \
         --bind "${PROJECT_DIR}:/work" \
         --bind "${DATA_DIR}:/data/input:ro" \
         --bind "${FULL_DIR}:/data/output:rw" \
         --bind "${MODELS_CACHE}:/app/models:rw" \
         --bind "${MODELS_CACHE}:/opt/conda/lib/python3.10/site-packages/spineps/models:rw" \
-        --bind "$(dirname $SERIES_CSV):/data/raw" \
+        --bind "$(dirname $SERIES_CSV):/data/raw:ro" \
         --env SPINEPS_SEGMENTOR_MODELS=/app/models \
         --env SPINEPS_ENVIRONMENT_DIR=/app/models \
         --pwd /work \
@@ -388,8 +386,8 @@ else
         python /work/src/screening/lstv_screen_production_COMPLETE.py \
             --mode full \
             --input_dir /data/input \
-            ${SERIES_CSV_ARG} \
             --output_dir /data/output \
+            --series_csv /data/raw/train_series_descriptions.csv \
             --roboflow_key "${ROBOFLOW_KEY}" \
             --roboflow_workspace "${ROBOFLOW_WORKSPACE}" \
             --roboflow_project "${ROBOFLOW_PROJECT}" \
@@ -419,9 +417,9 @@ import pandas as pd
 try:
     with open('${FULL_PROGRESS}') as f:
         progress = json.load(f)
-    
+
     df = pd.read_csv('${FULL_RESULTS}')
-    
+
     total = len(progress.get('processed', []))
     failed = len(progress.get('failed', []))
     lstv_total = df['is_lstv_candidate'].sum()
@@ -429,10 +427,10 @@ try:
     medium_conf = len(progress.get('medium_confidence', []))
     low_conf = len(progress.get('low_confidence', []))
     uploaded = len(progress.get('flagged', []))
-    
+
     semantic_avail = len(progress.get('semantic_available', []))
     semantic_pct = semantic_avail / max(total, 1) * 100
-    
+
     print(f"  Studies processed:     {total}")
     print(f"  Failed:                {failed}")
     print(f"  LSTV candidates:       {lstv_total} ({lstv_total/max(total,1)*100:.1f}%)")
@@ -444,7 +442,7 @@ try:
     print(f"")
     print(f"  Uploaded to Roboflow:  {uploaded}")
     print(f"  Semantic available:    {semantic_avail} ({semantic_pct:.1f}%)")
-    
+
 except Exception as e:
     print(f"Error: {e}")
 PYEOF
@@ -484,13 +482,13 @@ print_phase "6" "ROBOFLOW UPLOAD - Already Completed During Full Screening"
 
 if [[ -f "$FULL_PROGRESS" ]]; then
     UPLOADED=$(python3 -c "import json; p=json.load(open('${FULL_PROGRESS}')); print(len(p.get('flagged', [])))" 2>/dev/null || echo "0")
-    
+
     echo "  Images uploaded:       ${UPLOADED}"
     echo "  Workspace:             ${ROBOFLOW_WORKSPACE}"
     echo "  Project:               ${ROBOFLOW_PROJECT}"
     echo "  URL:                   https://app.roboflow.com/${ROBOFLOW_WORKSPACE}/${ROBOFLOW_PROJECT}"
     echo ""
-    
+
     if [ "$UPLOADED" -gt 0 ]; then
         print_success "High-confidence LSTV cases uploaded to Roboflow."
     else

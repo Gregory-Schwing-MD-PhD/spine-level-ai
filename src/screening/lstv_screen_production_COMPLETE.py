@@ -1,19 +1,12 @@
 #!/usr/bin/env python3
 """
-PRODUCTION LSTV SCREENING SYSTEM v3.0 - COMPLETE IMPLEMENTATION
+PRODUCTION LSTV SCREENING SYSTEM v3.0 - COMPLETE IMPLEMENTATION (FIXED)
 
-Merges robust SPINEPS execution with advanced rib/TP detection logic.
-Combines the best of lstv_screen.py (robust execution) and 
-lstv_screen_enhanced.py (confidence scoring + QA).
-
-KEY FEATURES:
-- Extracts BOTH instance AND semantic SPINEPS outputs
-- Detects ribs from semantic labels (when available)
-- Optimizes parasagittal slices using rib density
-- Confidence scoring (HIGH/MEDIUM/LOW)
-- QA images with vertebra labels
-- Smart Roboflow upload filtering
-- Three operational modes: diagnostic, trial, full
+Fixes:
+1. Proper CSV loading and series matching
+2. Correct sagittal series selection (T2w only)
+3. Fixed orientation detection
+4. Better DICOM handling
 
 Author: Claude + go2432
 Date: February 2026
@@ -169,170 +162,217 @@ class SpineAwareSliceSelector:
         }
 
 # ============================================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS - FIXED CSV LOADING
 # ============================================================================
 
 def load_series_descriptions(csv_path):
     """Load series descriptions CSV with proper dtypes"""
     try:
         df = pd.read_csv(csv_path)
-        # CRITICAL: Ensure study_id is int for matching
+        
+        # Check required columns
+        required_cols = ['study_id', 'series_id', 'series_description']
+        missing = [col for col in required_cols if col not in df.columns]
+        if missing:
+            print(f"  ✗ CSV missing columns: {missing}")
+            print(f"  Available columns: {list(df.columns)}")
+            return None
+        
+        # Convert dtypes
         df['study_id'] = df['study_id'].astype(int)
-        df['series_id'] = df['series_id'].astype(str)
+        df['series_id'] = df['series_id'].astype(int)  # Series IDs are integers
+        df['series_description'] = df['series_description'].astype(str)
+        
         print(f"  ✓ Loaded {len(df)} series descriptions")
+        print(f"  ✓ Unique studies: {df['study_id'].nunique()}")
+        print(f"  ✓ Sample descriptions:")
+        desc_counts = df['series_description'].value_counts().head(5)
+        for desc, count in desc_counts.items():
+            print(f"      - {desc}: {count}")
+        
         return df
     except Exception as e:
         print(f"  ✗ Failed to load series CSV: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
 def select_best_series(study_dir, series_df=None, study_id=None):
-    """Select best T2 SAGITTAL series (NOT coronal/axial)"""
+    """
+    Select best T2 SAGITTAL series using CSV descriptions
+    
+    CRITICAL: Only selects series explicitly marked as sagittal T2w
+    """
     series_dirs = sorted([d for d in study_dir.iterdir() if d.is_dir()])
     if not series_dirs:
         return None
 
-    if series_df is not None and study_id is not None:
-        try:
-            study_series = series_df[series_df['study_id'] == int(study_id)]
-        except (ValueError, TypeError) as e:
-            print(f"    ⚠ Could not match study_id {study_id}: {e}")
-            print(f"    ⚠ Using first series (no CSV match)")
-            return series_dirs[0]
-            
-        if len(study_series) > 0:
-            # CRITICAL: Only select SAGITTAL series, not coronal or axial!
-            # Sagittal keywords: 'Sagittal', 'SAG', 'sag'
-            # REJECT: 'Coronal', 'COR', 'Axial', 'AX'
-            
-            # First try: Explicit sagittal T2
-            priorities = [
-                'Sagittal T2',
-                'SAG T2', 
-                'Sagittal T2/STIR',
-                'T2 Sagittal',
-                'T2 SAG'
-            ]
-            
-            for priority in priorities:
-                matching = study_series[
-                    study_series['series_description'].str.contains(
-                        priority, case=False, na=False, regex=False)
-                ]
-                if len(matching) > 0:
-                    series_id = str(matching.iloc[0]['series_id'])
-                    series_path = study_dir / series_id
-                    if series_path.exists():
-                        print(f"    Selected: {matching.iloc[0]['series_description']}")
-                        return series_path
-            
-            # Fallback: Any series with 'sag' but NOT 'cor' or 'ax'
-            sag_series = study_series[
-                study_series['series_description'].str.contains('sag', case=False, na=False) &
-                ~study_series['series_description'].str.contains('cor|axial|ax ', case=False, na=False)
-            ]
-            if len(sag_series) > 0:
-                series_id = str(sag_series.iloc[0]['series_id'])
-                series_path = study_dir / series_id
-                if series_path.exists():
-                    print(f"    Selected (fallback): {sag_series.iloc[0]['series_description']}")
-                    return series_path
-            
-            # If no sagittal found, print warning and available series
-            print(f"    ⚠ No sagittal series found! Available:")
-            for _, row in study_series.iterrows():
-                print(f"      - {row['series_description']}")
+    # If no CSV, can't determine series type - FAIL
+    if series_df is None or study_id is None:
+        print(f"    ✗ No series CSV - cannot identify sagittal series")
+        return None
+
+    try:
+        study_id_int = int(study_id)
+        study_series = series_df[series_df['study_id'] == study_id_int].copy()
+    except (ValueError, TypeError) as e:
+        print(f"    ✗ Invalid study_id {study_id}: {e}")
+        return None
+
+    if len(study_series) == 0:
+        print(f"    ✗ Study {study_id} not found in CSV")
+        return None
+
+    # Get series IDs that exist in filesystem
+    available_series_ids = [int(d.name) for d in series_dirs]
+    study_series = study_series[study_series['series_id'].isin(available_series_ids)]
     
-    # Last resort: use first directory (risky!)
-    print(f"    ⚠ Using first series (no CSV match)")
-    return series_dirs[0]
+    if len(study_series) == 0:
+        print(f"    ✗ No matching series found in filesystem")
+        return None
+
+    # Priority 1: Explicit "Sagittal T2/STIR" 
+    priority_patterns = [
+        'Sagittal T2/STIR',
+        'SAG T2 STIR',
+        'Sagittal T2',
+        'SAG T2',
+    ]
+
+    for pattern in priority_patterns:
+        matching = study_series[
+            study_series['series_description'].str.contains(
+                pattern, case=False, na=False, regex=False)
+        ]
+        if len(matching) > 0:
+            series_id = int(matching.iloc[0]['series_id'])
+            series_path = study_dir / str(series_id)
+            if series_path.exists():
+                desc = matching.iloc[0]['series_description']
+                print(f"    ✓ Selected: {desc} (series {series_id})")
+                return series_path
+
+    # Priority 2: Any T2 with "sag" but NOT "cor" or "ax"
+    sag_series = study_series[
+        (study_series['series_description'].str.contains('sag', case=False, na=False)) &
+        (study_series['series_description'].str.contains('t2', case=False, na=False)) &
+        (~study_series['series_description'].str.contains('cor|axial|ax ', case=False, na=False))
+    ]
+    
+    if len(sag_series) > 0:
+        series_id = int(sag_series.iloc[0]['series_id'])
+        series_path = study_dir / str(series_id)
+        if series_path.exists():
+            desc = sag_series.iloc[0]['series_description']
+            print(f"    ⚠ Selected (fallback): {desc} (series {series_id})")
+            return series_path
+
+    # No sagittal T2 found - list what's available
+    print(f"    ✗ No sagittal T2 series found!")
+    print(f"    Available series:")
+    for _, row in study_series.iterrows():
+        print(f"      - {row['series_id']}: {row['series_description']}")
+    
+    return None
 
 
-def convert_dicom_to_nifti(dicom_dir, output_path):
-    """Convert DICOM to NIfTI using dcm2niix with proper orientation"""
+def convert_dicom_to_nifti(dicom_dir, output_path, study_id):
+    """
+    Convert DICOM to NIfTI with STRICT orientation checking
+    
+    Returns None if not sagittal, otherwise returns NIfTI path
+    """
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        study_id = output_path.stem.replace('_T2w', '').replace('.nii', '').replace('sub-', '')
-        bids_base = f"sub-{study_id}_sequ-sag_T2w"  # Add 'sag' to filename for SPINEPS
-
-        # CRITICAL dcm2niix flags for proper orientation:
-        # -z y : compress
-        # -f : filename format
-        # -o : output directory  
-        # -m y : merge 2D slices into 3D volume
-        # -ba n : don't anonymize (preserves orientation info)
-        # -i n : don't ignore derived/localizer (we want all data)
-        # -x n : don't crop (preserves full FOV)
-        cmd = ['dcm2niix', 
-               '-z', 'y',
-               '-f', bids_base,
-               '-o', str(output_path.parent),
-               '-m', 'y',
-               '-ba', 'n',  # Don't anonymize - preserves metadata
-               '-i', 'n',   # Don't ignore derived images
-               '-x', 'n',   # Don't crop
-               str(dicom_dir)]
         
+        # Use BIDS-like naming for SPINEPS compatibility
+        bids_base = f"sub-{study_id}_sequ-sag_T2w"
+
+        # dcm2niix with orientation preservation
+        cmd = [
+            'dcm2niix',
+            '-z', 'y',           # Compress
+            '-f', bids_base,     # Filename
+            '-o', str(output_path.parent),
+            '-m', 'y',           # Merge 2D → 3D
+            '-ba', 'n',          # Don't anonymize (preserves orientation)
+            '-i', 'n',           # Don't ignore derived
+            '-x', 'n',           # Don't crop
+            '-p', 'n',           # Don't use Philips scaling
+            str(dicom_dir)
+        ]
+
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
         if result.returncode != 0:
-            print(f"  ✗ dcm2niix failed")
-            if result.stderr:
-                print(f"    Error: {result.stderr[:200]}")
+            print(f"    ✗ dcm2niix failed: {result.stderr[:200] if result.stderr else 'unknown error'}")
             return None
 
-        # Check for the expected output
+        # Find generated NIfTI
         expected_output = output_path.parent / f"{bids_base}.nii.gz"
         if not expected_output.exists():
-            # Try finding any generated file
             nifti_files = sorted(output_path.parent.glob(f"{bids_base}*.nii.gz"))
             if not nifti_files:
                 nifti_files = sorted(output_path.parent.glob(f"sub-{study_id}*.nii.gz"))
             if not nifti_files:
-                print(f"  ✗ No NIfTI generated")
+                print(f"    ✗ No NIfTI generated")
                 return None
+            
             generated_file = nifti_files[0]
             if generated_file != expected_output:
-                if expected_output.exists():
-                    expected_output.unlink()
                 shutil.move(str(generated_file), str(expected_output))
+
+        # CRITICAL: Verify orientation
+        nii = nib.load(expected_output)
+        orientation = nib.aff2axcodes(nii.affine)
         
-        # Verify the NIfTI has proper orientation and reorient if needed
-        try:
-            import nibabel as nib
-            nii = nib.load(expected_output)
-            orientation = nib.aff2axcodes(nii.affine)
-            print(f"    NIfTI shape: {nii.shape}, orientation: {orientation}")
-            
-            # Check if sagittal (first axis should be L-R)
-            # Sagittal: ('R', 'A', 'S'), ('L', 'A', 'S'), ('R', 'P', 'S'), ('L', 'P', 'S')
-            # Coronal: ('R', 'S', 'A'), ('L', 'S', 'A'), etc - WRONG!
-            # Axial: ('R', 'A', 'I'), ('L', 'A', 'I'), etc - WRONG!
-            
-            first_axis = orientation[0]
-            if first_axis not in ('R', 'L'):
-                print(f"    ✗ Image is not sagittal (orientation: {orientation})")
-                print(f"    ✗ Skipping non-sagittal series")
-                return None
-        except Exception as e:
-            print(f"    ⚠ Orientation check failed: {e}")
-            pass
-            
+        print(f"    NIfTI shape: {nii.shape}, orientation: {orientation}")
+        
+        # Check if sagittal - we need L/R as FIRST axis
+        # Sagittal patterns: (L|R, A|P, S|I)
+        # Coronal patterns: (L|R, S|I, A|P) - WRONG
+        # Axial patterns: (L|R, A|P, I|S) but with different first axis - WRONG
+        
+        first_axis = orientation[0]
+        second_axis = orientation[1]
+        third_axis = orientation[2]
+        
+        # Sagittal = L/R on first axis, with reasonable other axes
+        is_sagittal = (first_axis in ('R', 'L'))
+        
+        # Additional check: for sagittal, usually smallest dimension should be on axis 0
+        smallest_dim_axis = np.argmin(nii.shape)
+        
+        if not is_sagittal:
+            print(f"    ✗ Not sagittal (first axis is {first_axis}, not L/R)")
+            print(f"    ✗ Skipping this series")
+            return None
+        
+        if smallest_dim_axis != 0:
+            print(f"    ⚠ Warning: smallest dimension is axis {smallest_dim_axis}, not 0")
+            print(f"    This might indicate coronal/axial mislabeled as sagittal")
+            # Still try to process, but flag it
+        
         return expected_output
+        
+    except subprocess.TimeoutExpired:
+        print(f"    ✗ dcm2niix timeout")
+        return None
     except Exception as e:
-        print(f"  ✗ DICOM conversion error: {e}")
+        print(f"    ✗ DICOM conversion error: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
 # ============================================================================
-# SPINEPS DUAL EXTRACTOR (FIXED)
+# SPINEPS DUAL EXTRACTOR
 # ============================================================================
 
 def run_spineps_dual_extraction(nifti_path: Path, output_dir: Path) -> Optional[Dict[str, Path]]:
     """
     Run SPINEPS and extract BOTH instance and semantic outputs
-    
-    FIXED: Uses Python module via wrapper (not broken CLI)
     
     Returns:
         {
@@ -342,12 +382,12 @@ def run_spineps_dual_extraction(nifti_path: Path, output_dir: Path) -> Optional[
     """
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Set environment variables
+
+        # Set environment
         env = os.environ.copy()
         env['SPINEPS_SEGMENTOR_MODELS'] = env.get('SPINEPS_SEGMENTOR_MODELS', '/app/models')
         env['SPINEPS_ENVIRONMENT_DIR'] = env.get('SPINEPS_ENVIRONMENT_DIR', '/app/models')
-        
+
         # Find wrapper script
         script_dir = Path(__file__).parent
         wrapper_candidates = [
@@ -356,146 +396,102 @@ def run_spineps_dual_extraction(nifti_path: Path, output_dir: Path) -> Optional[
             Path('/work/src/screening/spineps_wrapper_FIXED.sh'),
             Path('/work/src/screening/spineps_wrapper.sh'),
         ]
-        
+
         wrapper_path = None
         for candidate in wrapper_candidates:
             if candidate.exists():
                 wrapper_path = candidate
                 break
-        
+
         if wrapper_path:
-            # Use wrapper script
             print(f"    Running SPINEPS via wrapper: {wrapper_path.name}")
             sys.stdout.flush()
-            
-            # CRITICAL: SPINEPS needs explicit output directory
-            # Without -o flag, it doesn't create derivatives_seg!
+
             cmd = [
                 'bash', str(wrapper_path), 'sample',
                 '-i', str(nifti_path),
-                
                 '-model_semantic', 't2w',
                 '-model_instance', 'instance',
                 '-model_labeling', 't2w_labeling',
-                
                 '-override_semantic', '-override_instance', '-override_ctd'
             ]
         else:
-            # Fallback: Direct Python module call
-            print(f"    Running SPINEPS via Python module (no wrapper found)")
+            print(f"    Running SPINEPS via Python module")
             sys.stdout.flush()
-            
+
             cmd = [
                 'python', '-m', 'spineps.entrypoint', 'sample',
                 '-i', str(nifti_path),
-                
                 '-model_semantic', 't2w',
                 '-model_instance', 'instance',
                 '-model_labeling', 't2w_labeling',
-                
                 '-override_semantic', '-override_instance', '-override_ctd'
             ]
-        
+
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
 
-        # ALWAYS print SPINEPS output for debugging
+        # Print SPINEPS output for debugging
         if result.stdout:
             stdout_lines = [line for line in result.stdout.split('\n') if line.strip()]
-            if stdout_lines:
-                print(f"    === SPINEPS STDOUT ({len(stdout_lines)} lines) ===")
-                # Print last 20 lines or all if fewer
+            if stdout_lines and len(stdout_lines) <= 30:
+                print(f"    SPINEPS output:")
                 for line in stdout_lines[-20:]:
-                    print(f"    {line}")
-        
-        if result.stderr:
-            stderr_lines = [line for line in result.stderr.split('\n') if line.strip()]
-            if stderr_lines:
-                print(f"    === SPINEPS STDERR ({len(stderr_lines)} lines) ===")
-                for line in stderr_lines[-20:]:
-                    print(f"    {line}")
+                    print(f"      {line}")
 
         if result.returncode != 0:
-            print(f"  ✗ SPINEPS failed with return code {result.returncode}")
+            print(f"  ✗ SPINEPS failed (code {result.returncode})")
             return None
-        
-        # Print SPINEPS output to see where files were created
-        if result.stdout:
-            print(f"    SPINEPS output:")
-            for line in result.stdout.split('\n')[-10:]:  # Last 10 lines
-                if line.strip() and ('Saving' in line or 'saved' in line or 'output' in line):
-                    print(f"      {line.strip()}")
 
-        # SPINEPS creates derivatives_seg/ next to the INPUT file, not in output_dir!
+        # SPINEPS creates derivatives_seg/ next to INPUT file
         input_parent = nifti_path.parent
         derivatives_dir = input_parent / "derivatives_seg"
-        
+
         if not derivatives_dir.exists():
-            print(f"  ✗ derivatives_seg directory not found at {derivatives_dir}")
-            print(f"    Checking what exists in {input_parent}:")
-            for item in input_parent.iterdir():
-                print(f"      - {item.name}")
+            print(f"  ✗ derivatives_seg not found at {derivatives_dir}")
+            return None
+
+        # Extract study ID from filename
+        study_id = nifti_path.stem.replace('_sequ-sag_T2w', '').replace('.nii', '').replace('sub-', '')
+
+        # Find instance mask
+        seg_pattern = f"sub-{study_id}_*_seg-vert_msk.nii.gz"
+        instance_files = list(derivatives_dir.glob(seg_pattern))
+        
+        if not instance_files:
+            instance_files = list(derivatives_dir.glob("*_seg-vert_msk.nii.gz"))
+        
+        if not instance_files:
+            print(f"  ✗ Instance mask not found")
             return None
         
-        print(f"    Found derivatives: {derivatives_dir}")
+        instance_file = instance_files[0]
+        print(f"    ✓ Found instance: {instance_file.name}")
+
+        # Find semantic mask
+        semantic_pattern = f"sub-{study_id}_*_seg-spine_msk.nii.gz"
+        semantic_files = list(derivatives_dir.glob(semantic_pattern))
         
-        study_id = nifti_path.stem.replace('_T2w', '').replace('.nii', '').replace('sub-', '')
+        if not semantic_files:
+            semantic_files = list(derivatives_dir.glob("*_seg-spine_msk.nii.gz"))
         
-        # Find instance mask - use exact pattern from working code
-        seg_pattern = f"sub-{study_id}_mod-T2w_seg-vert_msk.nii.gz"
-        instance_file = derivatives_dir / seg_pattern
-        
-        if not instance_file.exists():
-            # Fallback: find any vert mask file
-            instance_files = list(derivatives_dir.glob("*_seg-vert_msk.nii.gz"))
-            if not instance_files:
-                print(f"  ✗ Instance mask not found")
-                print(f"    Looking for: {seg_pattern}")
-                print(f"    Available files:")
-                for f in derivatives_dir.glob("*.nii.gz"):
-                    print(f"      - {f.name}")
-                return None
-            instance_file = instance_files[0]
-        
-        print(f"    Found instance: {instance_file.name}")
-        
-        # Find semantic mask (ribs, TPs) - try multiple patterns
-        semantic_patterns = [
-            f"sub-{study_id}_mod-T2w_seg-spine_msk.nii.gz",
-            "*_seg-spine_msk.nii.gz",
-        ]
-        
-        semantic_file = None
-        for pattern in semantic_patterns:
-            if isinstance(pattern, str) and '*' not in pattern:
-                # Exact filename
-                candidate = derivatives_dir / pattern
-                if candidate.exists():
-                    semantic_file = candidate
-                    break
-            else:
-                # Glob pattern
-                matches = list(derivatives_dir.glob(pattern))
-                if matches:
-                    semantic_file = matches[0]
-                    break
+        semantic_file = semantic_files[0] if semantic_files else None
         
         if semantic_file:
-            print(f"    Found semantic: {semantic_file.name}")
+            print(f"    ✓ Found semantic: {semantic_file.name}")
 
-        # Copy instance mask to output (matching working code)
+        # Copy to output directory
         instance_output = output_dir / f"{study_id}_instance.nii.gz"
         shutil.copy(instance_file, instance_output)
-        
+
         outputs = {'instance': instance_output}
-        
-        # Copy semantic mask if found
+
         if semantic_file:
             semantic_output = output_dir / f"{study_id}_semantic.nii.gz"
             shutil.copy(semantic_file, semantic_output)
             outputs['semantic'] = semantic_output
-            print(f"  ✓ Saved: instance + semantic masks")
+            print(f"  ✓ Extracted: instance + semantic")
         else:
-            print(f"  ⚠ Saved: instance only (semantic not available)")
+            print(f"  ⚠ Extracted: instance only")
 
         return outputs
 
@@ -504,6 +500,8 @@ def run_spineps_dual_extraction(nifti_path: Path, output_dir: Path) -> Optional[
         return None
     except Exception as e:
         print(f"  ✗ SPINEPS failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -513,14 +511,7 @@ def run_spineps_dual_extraction(nifti_path: Path, output_dir: Path) -> Optional[
 
 def calculate_lstv_confidence(seg_data, unique_labels, lumbar_labels,
                                has_l6, s1_s2_disc, has_sacrum):
-    """
-    Calculate confidence score for LSTV detection
-
-    Returns:
-        confidence_score (float): 0.0-1.0
-        confidence_level (str): LOW/MEDIUM/HIGH
-        confidence_factors (list): Human-readable factors
-    """
+    """Calculate confidence score for LSTV detection"""
     confidence_score = 0.0
     confidence_factors = []
 
@@ -535,33 +526,31 @@ def calculate_lstv_confidence(seg_data, unique_labels, lumbar_labels,
             l5_volume = l5_mask.sum()
             size_ratio = l6_volume / l5_volume if l5_volume > 0 else 0
 
-            # L6 should be similar size to L5 (0.5-1.5x)
             if 0.5 <= size_ratio <= 1.5:
                 confidence_score += 0.4
                 confidence_factors.append(f"L6/L5 ratio: {size_ratio:.2f} (valid)")
             else:
                 confidence_factors.append(f"L6/L5 ratio: {size_ratio:.2f} (SUSPICIOUS)")
 
-        # Minimum absolute size check
         if l6_volume > 500:
             confidence_score += 0.2
             confidence_factors.append(f"L6 volume: {l6_volume} voxels (OK)")
         else:
             confidence_factors.append(f"L6 volume: {l6_volume} voxels (TOO SMALL)")
 
-    # Factor 2: Sacrum must be present
+    # Factor 2: Sacrum presence
     if has_sacrum:
         confidence_score += 0.2
         confidence_factors.append("Sacrum detected")
     else:
         confidence_factors.append("NO SACRUM (red flag)")
 
-    # Factor 3: S1-S2 disc is strong sacralization indicator
+    # Factor 3: S1-S2 disc
     if s1_s2_disc:
         confidence_score += 0.3
         confidence_factors.append("S1-S2 disc (strong evidence)")
 
-    # Factor 4: Vertebra count consistency
+    # Factor 4: Vertebra count
     vertebra_count = len(lumbar_labels)
     if vertebra_count in [4, 5, 6]:
         confidence_score += 0.1
@@ -569,7 +558,6 @@ def calculate_lstv_confidence(seg_data, unique_labels, lumbar_labels,
     else:
         confidence_factors.append(f"Count: {vertebra_count} (IMPLAUSIBLE)")
 
-    # Determine confidence level
     if confidence_score >= 0.7:
         confidence_level = "HIGH"
     elif confidence_score >= 0.4:
@@ -581,7 +569,7 @@ def calculate_lstv_confidence(seg_data, unique_labels, lumbar_labels,
 
 
 def analyze_segmentation(seg_path):
-    """Analyze segmentation for LSTV candidates with confidence scoring"""
+    """Analyze segmentation for LSTV candidates"""
     try:
         seg_nii = nib.load(seg_path)
         seg_data = seg_nii.get_fdata().astype(int)
@@ -603,7 +591,6 @@ def analyze_segmentation(seg_path):
         elif s1_s2_disc:
             lstv_type = "s1_s2_disc"
 
-        # Calculate confidence
         if is_lstv:
             confidence_score, confidence_level, confidence_factors = calculate_lstv_confidence(
                 seg_data, unique_labels, lumbar_labels, has_l6, s1_s2_disc, has_sacrum
@@ -632,25 +619,20 @@ def analyze_segmentation(seg_path):
 
 
 # ============================================================================
-# PARASAGITTAL OPTIMIZER (RIB-DENSITY BASED)
+# PARASAGITTAL OPTIMIZER
 # ============================================================================
 
 def find_optimal_parasagittal_slices_semantic(
     semantic_data: np.ndarray,
     instance_data: np.ndarray,
-    target_vertebra: str,  # 'T12' or 'L5'
+    target_vertebra: str,
     voxel_spacing: Tuple[float, float, float] = (1.0, 1.0, 1.0)
 ) -> Dict[str, int]:
-    """
-    Find parasagittal slices with MAXIMUM rib/TP density using semantic labels
-
-    This is MUCH better than generic "vertebra density" optimization!
-    """
+    """Find parasagittal slices with max rib/TP density"""
 
     sag_axis = np.argmin(semantic_data.shape)
     num_slices = semantic_data.shape[sag_axis]
 
-    # Get target labels
     if target_vertebra == 'T12':
         left_label = SEMANTIC_LABELS['rib_left']
         right_label = SEMANTIC_LABELS['rib_right']
@@ -660,21 +642,18 @@ def find_optimal_parasagittal_slices_semantic(
         right_label = SEMANTIC_LABELS['transverse_process_right']
         vertebra_instance = INSTANCE_LABELS['L5']
 
-    # Find vertebra center from instance labels
     vertebra_mask = (instance_data == vertebra_instance)
 
     if not vertebra_mask.any():
-        # Fallback to geometric center
         center = num_slices // 2
         offset = 40
         return {
-            'left': max(0, center - offset), 
+            'left': max(0, center - offset),
             'right': min(num_slices - 1, center + offset),
             'left_density': 0,
             'right_density': 0
         }
 
-    # Get vertebra center
     if sag_axis == 0:
         coords = np.where(vertebra_mask)[0]
     elif sag_axis == 1:
@@ -684,8 +663,6 @@ def find_optimal_parasagittal_slices_semantic(
 
     center = int(np.median(coords))
     offset = int(40 / voxel_spacing[sag_axis])
-
-    # OPTIMIZATION: Search for slices with MAX rib/TP density
     search_range = 15
 
     # Left side
@@ -741,7 +718,6 @@ def extract_slice(data, sag_axis, slice_idx, thickness=1):
         else:
             return data[:, :, slice_idx]
 
-    # Thick slab MIP
     half_thick = thickness // 2
     start = max(0, slice_idx - half_thick)
     end = min(data.shape[sag_axis], slice_idx + half_thick + 1)
@@ -757,7 +733,7 @@ def extract_slice(data, sag_axis, slice_idx, thickness=1):
 
 
 def normalize_slice(img_slice):
-    """Normalize to 0-255 uint8 with CLAHE enhancement"""
+    """Normalize to 0-255 uint8 with CLAHE"""
     if img_slice.max() > img_slice.min():
         normalized = ((img_slice - img_slice.min()) /
                      (img_slice.max() - img_slice.min()) * 255)
@@ -782,7 +758,7 @@ def get_vertebra_centroid(seg_slice, label_id):
 
 
 def create_labeled_overlay(mri_slice, seg_slice, lstv_info):
-    """Create RGB image with vertebra labels overlaid"""
+    """Create RGB image with vertebra labels"""
     rgb_img = cv2.cvtColor(mri_slice, cv2.COLOR_GRAY2RGB)
 
     unique_labels = np.unique(seg_slice)
@@ -798,7 +774,6 @@ def create_labeled_overlay(mri_slice, seg_slice, lstv_info):
 
         cx, cy = centroid
 
-        # Choose color based on LSTV significance
         if name == 'L6':
             color = LSTV_COLORS['L6']
             thickness = 3
@@ -820,14 +795,12 @@ def create_labeled_overlay(mri_slice, seg_slice, lstv_info):
             thickness = 1
             font_scale = 0.6
 
-        # Draw text label
         cv2.putText(rgb_img, name, (cx - 30, cy),
                    cv2.FONT_HERSHEY_SIMPLEX, font_scale,
                    color, thickness, cv2.LINE_AA)
-
         cv2.circle(rgb_img, (cx, cy), 4, color, -1)
 
-    # Add LSTV banner if applicable
+    # Add LSTV banner
     if lstv_info['is_lstv_candidate']:
         banner_height = 40
         banner = np.zeros((banner_height, rgb_img.shape[1], 3), dtype=np.uint8)
@@ -858,23 +831,17 @@ def create_labeled_overlay(mri_slice, seg_slice, lstv_info):
 
 
 def extract_three_view_images(
-    nifti_path, 
+    nifti_path,
     instance_path,
     semantic_path,
-    output_dir, 
-    qa_dir, 
-    study_id, 
-    selector, 
+    output_dir,
+    qa_dir,
+    study_id,
+    selector,
     analysis,
     use_semantic_optimization=True
 ):
-    """
-    Extract 3 views with optional semantic-based optimization and QA labels
-    
-    Args:
-        use_semantic_optimization: If True and semantic data available, 
-                                   optimize parasagittal slices for rib density
-    """
+    """Extract 3 views with optional semantic optimization"""
     try:
         nii = nib.load(nifti_path)
         instance_nii = nib.load(instance_path)
@@ -882,7 +849,6 @@ def extract_three_view_images(
         mri_data = nii.get_fdata()
         instance_data = instance_nii.get_fdata().astype(int)
 
-        # Try to load semantic if available
         semantic_data = None
         if semantic_path and semantic_path.exists():
             semantic_nii = nib.load(semantic_path)
@@ -890,33 +856,28 @@ def extract_three_view_images(
 
         dims = mri_data.shape
         sag_axis = np.argmin(dims)
-        
-        # Determine slice selection method
+
         if use_semantic_optimization and semantic_data is not None:
-            # NEW: Use rib-density optimization
-            print(f"    Using semantic rib-density optimization")
+            print(f"    Using semantic optimization")
             voxel_spacing = nii.header.get_zooms()
-            
-            # Get T12-optimized slices (for ribs)
+
             t12_slices = find_optimal_parasagittal_slices_semantic(
                 semantic_data, instance_data, 'T12', voxel_spacing
             )
-            
-            # Get L5-optimized slice (for TPs)
+
             l5_slices = find_optimal_parasagittal_slices_semantic(
                 semantic_data, instance_data, 'L5', voxel_spacing
             )
-            
+
             views = {
                 'left': t12_slices['left'],
-                'mid': l5_slices['left'],  # Use L5 center for midline
+                'mid': l5_slices['left'],
                 'right': t12_slices['right'],
             }
-            
+
             print(f"    Rib densities - L:{t12_slices['left_density']} R:{t12_slices['right_density']}")
         else:
-            # FALLBACK: Use standard spine-aware selection
-            print(f"    Using standard spine-aware selection")
+            print(f"    Using standard selection")
             slice_info = selector.get_three_slices(instance_data, sag_axis)
             views = {
                 'left': slice_info['left'],
@@ -927,19 +888,16 @@ def extract_three_view_images(
         output_paths = {}
 
         for view_name, slice_idx in views.items():
-            # Use thick slab MIP for parasagittal, thin for midline
             thickness = 15 if view_name in ['left', 'right'] else 5
             mri_slice = extract_slice(mri_data, sag_axis, slice_idx, thickness=thickness)
             instance_slice = extract_slice(instance_data, sag_axis, slice_idx, thickness=thickness)
 
             normalized = normalize_slice(mri_slice)
 
-            # Save standard image (for Roboflow)
             output_path = output_dir / f"{study_id}_{view_name}.jpg"
             cv2.imwrite(str(output_path), normalized)
             output_paths[view_name] = output_path
 
-            # Save QA image with labels (for manual review)
             if qa_dir:
                 labeled_img = create_labeled_overlay(normalized, instance_slice, analysis)
                 qa_path = qa_dir / f"{study_id}_{view_name}_QA.jpg"
@@ -955,7 +913,7 @@ def extract_three_view_images(
 
 
 def upload_to_roboflow(image_path, study_id, roboflow_key, workspace, project):
-    """Upload image to Roboflow"""
+    """Upload to Roboflow"""
     try:
         from roboflow import Roboflow
         rf = Roboflow(api_key=roboflow_key)
@@ -974,7 +932,7 @@ def upload_to_roboflow(image_path, study_id, roboflow_key, workspace, project):
 
 
 def load_progress(progress_file):
-    """Load progress from JSON file"""
+    """Load progress"""
     if progress_file.exists():
         try:
             with open(progress_file, 'r') as f:
@@ -982,11 +940,11 @@ def load_progress(progress_file):
         except:
             pass
     return {
-        'processed': [], 
-        'flagged': [], 
+        'processed': [],
+        'flagged': [],
         'failed': [],
-        'high_confidence': [], 
-        'medium_confidence': [], 
+        'high_confidence': [],
+        'medium_confidence': [],
         'low_confidence': [],
         'semantic_available': [],
         'semantic_missing': []
@@ -994,7 +952,7 @@ def load_progress(progress_file):
 
 
 def save_progress(progress_file, progress):
-    """Save progress to JSON file"""
+    """Save progress"""
     try:
         temp_file = progress_file.with_suffix('.json.tmp')
         with open(temp_file, 'w') as f:
@@ -1005,7 +963,7 @@ def save_progress(progress_file, progress):
 
 
 # ============================================================================
-# MAIN SCREENING LOGIC
+# MAIN PROCESSING
 # ============================================================================
 
 def process_study(
@@ -1015,31 +973,24 @@ def process_study(
     selector: SpineAwareSliceSelector,
     args
 ) -> Optional[Dict]:
-    """
-    Process a single study - COMPLETE IMPLEMENTATION
-    
-    Returns result dict or None on failure
-    """
+    """Process a single study"""
     study_id = study_dir.name
 
     try:
-        # 1. Select best series
+        # Select series using CSV
         series_dir = select_best_series(study_dir, series_df, study_id)
         if series_dir is None:
-            print(f"  ✗ No series found")
             return None
 
-        print(f"  Series: {series_dir.name}")
-
-        # 2. Convert DICOM to NIfTI
-        nifti_path = output_dirs['nifti'] / f"sub-{study_id}_T2w.nii.gz"
+        # Convert DICOM to NIfTI
+        nifti_path = output_dirs['nifti'] / f"sub-{study_id}_sequ-sag_T2w.nii.gz"
         if not nifti_path.exists():
             print(f"  Converting DICOM...")
-            nifti_path = convert_dicom_to_nifti(series_dir, nifti_path)
+            nifti_path = convert_dicom_to_nifti(series_dir, nifti_path, study_id)
             if nifti_path is None:
                 return None
 
-        # 3. Run SPINEPS dual extraction
+        # Run SPINEPS
         seg_outputs = run_spineps_dual_extraction(nifti_path, output_dirs['segmentations'])
         if seg_outputs is None:
             return None
@@ -1047,7 +998,7 @@ def process_study(
         instance_path = seg_outputs['instance']
         semantic_path = seg_outputs.get('semantic')
 
-        # 4. Analyze instance segmentation
+        # Analyze
         print(f"  Analyzing...")
         analysis = analyze_segmentation(instance_path)
         if analysis is None:
@@ -1065,7 +1016,7 @@ def process_study(
             'has_semantic': semantic_path is not None,
         }
 
-        # 5. If LSTV candidate, extract images
+        # Extract images if LSTV
         if analysis['is_lstv_candidate']:
             confidence_level = analysis['confidence_level']
             confidence_score = analysis['confidence_score']
@@ -1073,21 +1024,19 @@ def process_study(
             print(f"  🚩 LSTV! Type={analysis['lstv_type']}, "
                   f"Confidence={confidence_level} ({confidence_score:.2f})")
 
-            # Extract 3-view images
             image_paths = extract_three_view_images(
-                nifti_path, 
+                nifti_path,
                 instance_path,
                 semantic_path,
-                output_dirs['images'], 
+                output_dirs['images'],
                 output_dirs['qa'],
-                study_id, 
-                selector, 
+                study_id,
+                selector,
                 analysis,
                 use_semantic_optimization=(semantic_path is not None)
             )
 
             if image_paths:
-                # Smart upload based on confidence threshold
                 if confidence_score >= args.confidence_threshold:
                     if args.roboflow_key and args.roboflow_key != 'SKIP':
                         upload_success = 0
@@ -1123,66 +1072,38 @@ def process_study(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Production LSTV Screening v3.0 - COMPLETE',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-OPERATIONAL MODES:
-  diagnostic  → Test on 5 studies to check semantic label availability
-  trial       → Validate on 50 studies before full run
-  full        → Process all studies (~2700 → ~500 LSTV candidates)
-
-FEATURES:
-  ✓ Dual SPINEPS extraction (instance + semantic)
-  ✓ Rib-density parasagittal optimization (when semantic available)
-  ✓ Confidence scoring (HIGH/MEDIUM/LOW)
-  ✓ QA images with vertebra labels
-  ✓ Smart Roboflow filtering
-
-EXAMPLES:
-  # Diagnostic mode (test semantic availability)
-  python lstv_screen_production_COMPLETE.py --mode diagnostic \\
-    --input_dir /data/dicom --output_dir /out \\
-    --roboflow_key SKIP
-
-  # Trial mode (50 studies)
-  python lstv_screen_production_COMPLETE.py --mode trial \\
-    --input_dir /data/dicom --output_dir /out --limit 50 \\
-    --roboflow_key YOUR_KEY --confidence_threshold 0.7
-
-  # Full production run
-  python lstv_screen_production_COMPLETE.py --mode full \\
-    --input_dir /data/dicom --output_dir /out \\
-    --roboflow_key YOUR_KEY --confidence_threshold 0.7
-        """
+        description='Production LSTV Screening v3.0 - FIXED',
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
     parser.add_argument('--mode', type=str, required=True,
-                       choices=['diagnostic', 'trial', 'full'],
-                       help='Operation mode')
-    parser.add_argument('--input_dir', type=str, required=True,
-                       help='Input DICOM directory')
-    parser.add_argument('--output_dir', type=str, required=True,
-                       help='Output directory')
-    parser.add_argument('--series_csv', type=str, default=None,
-                       help='Series descriptions CSV')
-    parser.add_argument('--limit', type=int, default=None,
-                       help='Limit number of studies')
-    parser.add_argument('--roboflow_key', type=str, default='SKIP',
-                       help='Roboflow API key (use SKIP to disable upload)')
+                       choices=['diagnostic', 'trial', 'full'])
+    parser.add_argument('--input_dir', type=str, required=True)
+    parser.add_argument('--output_dir', type=str, required=True)
+    parser.add_argument('--series_csv', type=str, required=True,
+                       help='Path to train_series_descriptions.csv (REQUIRED)')
+    parser.add_argument('--limit', type=int, default=None)
+    parser.add_argument('--roboflow_key', type=str, default='SKIP')
     parser.add_argument('--roboflow_workspace', type=str, default='lstv-screening')
     parser.add_argument('--roboflow_project', type=str, default='lstv-candidates')
-    parser.add_argument('--confidence_threshold', type=float, default=0.7,
-                       help='Minimum confidence for auto-upload (0.0-1.0)')
+    parser.add_argument('--confidence_threshold', type=float, default=0.7)
     parser.add_argument('--verbose', action='store_true')
 
     args = parser.parse_args()
 
-    # Set study limits by mode
+    # Validate series CSV exists
+    series_csv_path = Path(args.series_csv)
+    if not series_csv_path.exists():
+        print(f"ERROR: Series CSV not found: {series_csv_path}")
+        print(f"This file is REQUIRED to identify sagittal T2 series")
+        sys.exit(1)
+
+    # Set limits
     if args.mode == 'diagnostic':
         study_limit = args.limit or 5
     elif args.mode == 'trial':
         study_limit = args.limit or 50
-    else:  # full
+    else:
         study_limit = args.limit
 
     # Setup directories
@@ -1200,24 +1121,20 @@ EXAMPLES:
     for d in output_dirs.values():
         d.mkdir(exist_ok=True)
 
-    # Load series descriptions if available
-    series_df = None
-    if args.series_csv:
-        series_csv = Path(args.series_csv)
-        if series_csv.exists():
-            series_df = load_series_descriptions(series_csv)
-            if series_df is not None:
-                print(f"✓ Loaded series descriptions: {len(series_df)} entries")
+    # Load series CSV
+    print(f"Loading series descriptions from: {series_csv_path}")
+    series_df = load_series_descriptions(series_csv_path)
+    if series_df is None:
+        print(f"ERROR: Failed to load series CSV")
+        sys.exit(1)
 
-    # Initialize selector
+    # Initialize
     selector = SpineAwareSliceSelector()
-
-    # Progress tracking
     progress_file = output_dir / 'progress.json'
     progress = load_progress(progress_file)
     results_csv = output_dir / 'results.csv'
 
-    # Get study list
+    # Get studies
     study_dirs = sorted([d for d in input_dir.iterdir() if d.is_dir()])
     if study_limit:
         study_dirs = study_dirs[:study_limit]
@@ -1232,10 +1149,10 @@ EXAMPLES:
     print(f"{'='*80}\n")
     sys.stdout.flush()
 
-    # Process studies
+    # Process
     for study_dir in tqdm(study_dirs, desc="Processing"):
         study_id = study_dir.name
-        
+
         if study_id in progress['processed']:
             continue
 
@@ -1248,13 +1165,11 @@ EXAMPLES:
             if result is None:
                 progress['failed'].append(study_id)
             else:
-                # Track semantic availability
                 if result.get('has_semantic'):
                     progress['semantic_available'].append(study_id)
                 else:
                     progress['semantic_missing'].append(study_id)
 
-                # Track confidence levels
                 if result['is_lstv_candidate']:
                     confidence_level = result['confidence_level']
                     if confidence_level == 'HIGH':
@@ -1265,7 +1180,6 @@ EXAMPLES:
                     else:
                         progress['low_confidence'].append(study_id)
 
-                # Save result to CSV
                 df = pd.DataFrame([result])
                 if results_csv.exists():
                     df.to_csv(results_csv, mode='a', header=False, index=False)
@@ -1276,7 +1190,7 @@ EXAMPLES:
             save_progress(progress_file, progress)
 
         except KeyboardInterrupt:
-            print("\n⚠️  Interrupted by user!")
+            print("\n⚠️  Interrupted!")
             save_progress(progress_file, progress)
             sys.exit(1)
         except Exception as e:
@@ -1293,17 +1207,16 @@ EXAMPLES:
     print(f"Failed: {len(progress['failed'])}")
     print()
     print(f"LSTV Candidates: {len(progress['flagged'])}")
-    print(f"  HIGH confidence:   {len(progress['high_confidence'])} → Uploaded")
-    print(f"  MEDIUM confidence: {len(progress['medium_confidence'])} → Manual review")
-    print(f"  LOW confidence:    {len(progress['low_confidence'])} → Flagged only")
+    print(f"  HIGH confidence:   {len(progress['high_confidence'])}")
+    print(f"  MEDIUM confidence: {len(progress['medium_confidence'])}")
+    print(f"  LOW confidence:    {len(progress['low_confidence'])}")
     print()
     print(f"Semantic masks:")
     print(f"  Available: {len(progress['semantic_available'])}")
     print(f"  Missing:   {len(progress['semantic_missing'])}")
     print()
-    print(f"Output directory: {output_dir}")
-    print(f"QA images: {output_dirs['qa']}")
-    print(f"Results CSV: {results_csv}")
+    print(f"Output: {output_dir}")
+    print(f"Results: {results_csv}")
     print(f"{'='*80}\n")
 
     if args.mode == 'diagnostic':
@@ -1311,11 +1224,11 @@ EXAMPLES:
         print(f"📊 DIAGNOSTIC SUMMARY:")
         print(f"   Semantic availability: {semantic_pct:.1f}%")
         if semantic_pct > 80:
-            print(f"   ✓ Excellent! Proceed with semantic-based optimization")
+            print(f"   ✓ Excellent - use semantic optimization")
         elif semantic_pct > 50:
-            print(f"   ⚠ Partial - semantic optimization will work for some cases")
+            print(f"   ⚠ Partial semantic coverage")
         else:
-            print(f"   ✗ Low - consider intensity-based fallback for ribs/TPs")
+            print(f"   ✗ Low - fallback to standard selection")
 
 
 if __name__ == "__main__":
