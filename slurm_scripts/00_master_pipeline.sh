@@ -164,10 +164,12 @@ else
 
     singularity exec --nv \
         --bind "${PROJECT_DIR}:/work" \
-        --bind "${DATA_DIR}:/data/input" \
-        --bind "${DIAGNOSTIC_DIR}:/data/output" \
-        --bind "${MODELS_CACHE}:/app/models" \
+        --bind "${DATA_DIR}:/data/input:ro" \
+        --bind "${DIAGNOSTIC_DIR}:/data/output:rw" \
+        --bind "${MODELS_CACHE}:/app/models:rw" \
+        --bind "${MODELS_CACHE}:/opt/conda/lib/python3.10/site-packages/spineps/models:rw" \
         --env SPINEPS_SEGMENTOR_MODELS=/app/models \
+        --env SPINEPS_ENVIRONMENT_DIR=/app/models \
         --pwd /work \
         "$IMG_PATH" \
         python /work/src/screening/lstv_screen_production_COMPLETE.py \
@@ -256,11 +258,13 @@ else
 
     singularity exec --nv \
         --bind "${PROJECT_DIR}:/work" \
-        --bind "${DATA_DIR}:/data/input" \
-        --bind "${TRIAL_DIR}:/data/output" \
-        --bind "${MODELS_CACHE}:/app/models" \
+        --bind "${DATA_DIR}:/data/input:ro" \
+        --bind "${TRIAL_DIR}:/data/output:rw" \
+        --bind "${MODELS_CACHE}:/app/models:rw" \
+        --bind "${MODELS_CACHE}:/opt/conda/lib/python3.10/site-packages/spineps/models:rw" \
         --bind "$(dirname $SERIES_CSV):/data/raw" \
         --env SPINEPS_SEGMENTOR_MODELS=/app/models \
+        --env SPINEPS_ENVIRONMENT_DIR=/app/models \
         --pwd /work \
         "$IMG_PATH" \
         python /work/src/screening/lstv_screen_production_COMPLETE.py \
@@ -372,11 +376,13 @@ else
 
     singularity exec --nv \
         --bind "${PROJECT_DIR}:/work" \
-        --bind "${DATA_DIR}:/data/input" \
-        --bind "${FULL_DIR}:/data/output" \
-        --bind "${MODELS_CACHE}:/app/models" \
+        --bind "${DATA_DIR}:/data/input:ro" \
+        --bind "${FULL_DIR}:/data/output:rw" \
+        --bind "${MODELS_CACHE}:/app/models:rw" \
+        --bind "${MODELS_CACHE}:/opt/conda/lib/python3.10/site-packages/spineps/models:rw" \
         --bind "$(dirname $SERIES_CSV):/data/raw" \
         --env SPINEPS_SEGMENTOR_MODELS=/app/models \
+        --env SPINEPS_ENVIRONMENT_DIR=/app/models \
         --pwd /work \
         "$IMG_PATH" \
         python /work/src/screening/lstv_screen_production_COMPLETE.py \

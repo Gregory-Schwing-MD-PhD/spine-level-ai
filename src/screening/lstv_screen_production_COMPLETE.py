@@ -173,60 +173,151 @@ class SpineAwareSliceSelector:
 # ============================================================================
 
 def load_series_descriptions(csv_path):
-    """Load series descriptions CSV"""
+    """Load series descriptions CSV with proper dtypes"""
     try:
-        return pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path)
+        # CRITICAL: Ensure study_id is int for matching
+        df['study_id'] = df['study_id'].astype(int)
+        df['series_id'] = df['series_id'].astype(str)
+        print(f"  ✓ Loaded {len(df)} series descriptions")
+        return df
     except Exception as e:
-        print(f"Warning: {e}")
+        print(f"  ✗ Failed to load series CSV: {e}")
         return None
 
 
 def select_best_series(study_dir, series_df=None, study_id=None):
-    """Select best T2 sagittal series"""
+    """Select best T2 SAGITTAL series (NOT coronal/axial)"""
     series_dirs = sorted([d for d in study_dir.iterdir() if d.is_dir()])
     if not series_dirs:
         return None
 
     if series_df is not None and study_id is not None:
-        study_series = series_df[series_df['study_id'] == int(study_id)]
+        try:
+            study_series = series_df[series_df['study_id'] == int(study_id)]
+        except (ValueError, TypeError) as e:
+            print(f"    ⚠ Could not match study_id {study_id}: {e}")
+            print(f"    ⚠ Using first series (no CSV match)")
+            return series_dirs[0]
+            
         if len(study_series) > 0:
-            priorities = ['Sagittal T2', 'Sagittal T2/STIR', 'SAG T2', 'Sagittal T1', 'SAG T1']
+            # CRITICAL: Only select SAGITTAL series, not coronal or axial!
+            # Sagittal keywords: 'Sagittal', 'SAG', 'sag'
+            # REJECT: 'Coronal', 'COR', 'Axial', 'AX'
+            
+            # First try: Explicit sagittal T2
+            priorities = [
+                'Sagittal T2',
+                'SAG T2', 
+                'Sagittal T2/STIR',
+                'T2 Sagittal',
+                'T2 SAG'
+            ]
+            
             for priority in priorities:
-                matching = study_series[study_series['series_description'].str.contains(
-                    priority, case=False, na=False)]
+                matching = study_series[
+                    study_series['series_description'].str.contains(
+                        priority, case=False, na=False, regex=False)
+                ]
                 if len(matching) > 0:
                     series_id = str(matching.iloc[0]['series_id'])
                     series_path = study_dir / series_id
                     if series_path.exists():
+                        print(f"    Selected: {matching.iloc[0]['series_description']}")
                         return series_path
+            
+            # Fallback: Any series with 'sag' but NOT 'cor' or 'ax'
+            sag_series = study_series[
+                study_series['series_description'].str.contains('sag', case=False, na=False) &
+                ~study_series['series_description'].str.contains('cor|axial|ax ', case=False, na=False)
+            ]
+            if len(sag_series) > 0:
+                series_id = str(sag_series.iloc[0]['series_id'])
+                series_path = study_dir / series_id
+                if series_path.exists():
+                    print(f"    Selected (fallback): {sag_series.iloc[0]['series_description']}")
+                    return series_path
+            
+            # If no sagittal found, print warning and available series
+            print(f"    ⚠ No sagittal series found! Available:")
+            for _, row in study_series.iterrows():
+                print(f"      - {row['series_description']}")
+    
+    # Last resort: use first directory (risky!)
+    print(f"    ⚠ Using first series (no CSV match)")
     return series_dirs[0]
 
 
 def convert_dicom_to_nifti(dicom_dir, output_path):
-    """Convert DICOM to NIfTI using dcm2niix"""
+    """Convert DICOM to NIfTI using dcm2niix with proper orientation"""
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         study_id = output_path.stem.replace('_T2w', '').replace('.nii', '').replace('sub-', '')
-        bids_base = f"sub-{study_id}_T2w"
+        bids_base = f"sub-{study_id}_sequ-sag_T2w"  # Add 'sag' to filename for SPINEPS
 
-        cmd = ['dcm2niix', '-z', 'y', '-f', bids_base, '-o', str(output_path.parent),
-               '-m', 'y', '-b', 'n', str(dicom_dir)]
+        # CRITICAL dcm2niix flags for proper orientation:
+        # -z y : compress
+        # -f : filename format
+        # -o : output directory  
+        # -m y : merge 2D slices into 3D volume
+        # -ba n : don't anonymize (preserves orientation info)
+        # -i n : don't ignore derived/localizer (we want all data)
+        # -x n : don't crop (preserves full FOV)
+        cmd = ['dcm2niix', 
+               '-z', 'y',
+               '-f', bids_base,
+               '-o', str(output_path.parent),
+               '-m', 'y',
+               '-ba', 'n',  # Don't anonymize - preserves metadata
+               '-i', 'n',   # Don't ignore derived images
+               '-x', 'n',   # Don't crop
+               str(dicom_dir)]
+        
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
         if result.returncode != 0:
             print(f"  ✗ dcm2niix failed")
+            if result.stderr:
+                print(f"    Error: {result.stderr[:200]}")
             return None
 
+        # Check for the expected output
         expected_output = output_path.parent / f"{bids_base}.nii.gz"
         if not expected_output.exists():
+            # Try finding any generated file
             nifti_files = sorted(output_path.parent.glob(f"{bids_base}*.nii.gz"))
             if not nifti_files:
+                nifti_files = sorted(output_path.parent.glob(f"sub-{study_id}*.nii.gz"))
+            if not nifti_files:
+                print(f"  ✗ No NIfTI generated")
                 return None
             generated_file = nifti_files[0]
             if generated_file != expected_output:
                 if expected_output.exists():
                     expected_output.unlink()
                 shutil.move(str(generated_file), str(expected_output))
+        
+        # Verify the NIfTI has proper orientation and reorient if needed
+        try:
+            import nibabel as nib
+            nii = nib.load(expected_output)
+            orientation = nib.aff2axcodes(nii.affine)
+            print(f"    NIfTI shape: {nii.shape}, orientation: {orientation}")
+            
+            # Check if sagittal (first axis should be L-R)
+            # Sagittal: ('R', 'A', 'S'), ('L', 'A', 'S'), ('R', 'P', 'S'), ('L', 'P', 'S')
+            # Coronal: ('R', 'S', 'A'), ('L', 'S', 'A'), etc - WRONG!
+            # Axial: ('R', 'A', 'I'), ('L', 'A', 'I'), etc - WRONG!
+            
+            first_axis = orientation[0]
+            if first_axis not in ('R', 'L'):
+                print(f"    ✗ Image is not sagittal (orientation: {orientation})")
+                print(f"    ✗ Skipping non-sagittal series")
+                return None
+        except Exception as e:
+            print(f"    ⚠ Orientation check failed: {e}")
+            pass
+            
         return expected_output
     except Exception as e:
         print(f"  ✗ DICOM conversion error: {e}")
@@ -241,7 +332,7 @@ def run_spineps_dual_extraction(nifti_path: Path, output_dir: Path) -> Optional[
     """
     Run SPINEPS and extract BOTH instance and semantic outputs
     
-    Uses the wrapper script to properly set environment variables.
+    FIXED: Uses Python module via wrapper (not broken CLI)
     
     Returns:
         {
@@ -252,76 +343,152 @@ def run_spineps_dual_extraction(nifti_path: Path, output_dir: Path) -> Optional[
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Find wrapper script dynamically
+        # Set environment variables
+        env = os.environ.copy()
+        env['SPINEPS_SEGMENTOR_MODELS'] = env.get('SPINEPS_SEGMENTOR_MODELS', '/app/models')
+        env['SPINEPS_ENVIRONMENT_DIR'] = env.get('SPINEPS_ENVIRONMENT_DIR', '/app/models')
+        
+        # Find wrapper script
         script_dir = Path(__file__).parent
-        wrapper_path = script_dir / 'spineps_wrapper.sh'
-        
-        # Fallback to hardcoded path if not found locally
-        if not wrapper_path.exists():
-            wrapper_path = Path('/work/src/screening/spineps_wrapper.sh')
-        
-        if not wrapper_path.exists():
-            print(f"  ✗ Wrapper not found at {wrapper_path}")
-            return None
-
-        cmd = [
-            'bash', str(wrapper_path), 'sample',
-            '-i', str(nifti_path),
-            '-model_semantic', 't2w',
-            '-model_instance', 'instance',
-            '-model_labeling', 't2w_labeling',
-            '-override_semantic', '-override_instance', '-override_ctd'
+        wrapper_candidates = [
+            script_dir / 'spineps_wrapper_FIXED.sh',
+            script_dir / 'spineps_wrapper.sh',
+            Path('/work/src/screening/spineps_wrapper_FIXED.sh'),
+            Path('/work/src/screening/spineps_wrapper.sh'),
         ]
+        
+        wrapper_path = None
+        for candidate in wrapper_candidates:
+            if candidate.exists():
+                wrapper_path = candidate
+                break
+        
+        if wrapper_path:
+            # Use wrapper script
+            print(f"    Running SPINEPS via wrapper: {wrapper_path.name}")
+            sys.stdout.flush()
+            
+            # CRITICAL: SPINEPS needs explicit output directory
+            # Without -o flag, it doesn't create derivatives_seg!
+            cmd = [
+                'bash', str(wrapper_path), 'sample',
+                '-i', str(nifti_path),
+                
+                '-model_semantic', 't2w',
+                '-model_instance', 'instance',
+                '-model_labeling', 't2w_labeling',
+                
+                '-override_semantic', '-override_instance', '-override_ctd'
+            ]
+        else:
+            # Fallback: Direct Python module call
+            print(f"    Running SPINEPS via Python module (no wrapper found)")
+            sys.stdout.flush()
+            
+            cmd = [
+                'python', '-m', 'spineps.entrypoint', 'sample',
+                '-i', str(nifti_path),
+                
+                '-model_semantic', 't2w',
+                '-model_instance', 'instance',
+                '-model_labeling', 't2w_labeling',
+                
+                '-override_semantic', '-override_instance', '-override_ctd'
+            ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
 
-        print(f"    Running SPINEPS...")
-        sys.stdout.flush()
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        # ALWAYS print SPINEPS output for debugging
+        if result.stdout:
+            stdout_lines = [line for line in result.stdout.split('\n') if line.strip()]
+            if stdout_lines:
+                print(f"    === SPINEPS STDOUT ({len(stdout_lines)} lines) ===")
+                # Print last 20 lines or all if fewer
+                for line in stdout_lines[-20:]:
+                    print(f"    {line}")
+        
+        if result.stderr:
+            stderr_lines = [line for line in result.stderr.split('\n') if line.strip()]
+            if stderr_lines:
+                print(f"    === SPINEPS STDERR ({len(stderr_lines)} lines) ===")
+                for line in stderr_lines[-20:]:
+                    print(f"    {line}")
 
         if result.returncode != 0:
             print(f"  ✗ SPINEPS failed with return code {result.returncode}")
-            if result.stderr:
-                print(f"  Error: {result.stderr[:200]}")
             return None
+        
+        # Print SPINEPS output to see where files were created
+        if result.stdout:
+            print(f"    SPINEPS output:")
+            for line in result.stdout.split('\n')[-10:]:  # Last 10 lines
+                if line.strip() and ('Saving' in line or 'saved' in line or 'output' in line):
+                    print(f"      {line.strip()}")
 
-        # Find derivatives directory
+        # SPINEPS creates derivatives_seg/ next to the INPUT file, not in output_dir!
         input_parent = nifti_path.parent
         derivatives_dir = input_parent / "derivatives_seg"
+        
         if not derivatives_dir.exists():
-            print(f"  ✗ derivatives_seg directory not found")
+            print(f"  ✗ derivatives_seg directory not found at {derivatives_dir}")
+            print(f"    Checking what exists in {input_parent}:")
+            for item in input_parent.iterdir():
+                print(f"      - {item.name}")
             return None
-
+        
+        print(f"    Found derivatives: {derivatives_dir}")
+        
         study_id = nifti_path.stem.replace('_T2w', '').replace('.nii', '').replace('sub-', '')
-
-        # Find instance mask (vertebrae)
-        instance_pattern = f"*{study_id}*_seg-vert_msk.nii.gz"
-        instance_files = list(derivatives_dir.glob(instance_pattern))
         
-        if not instance_files:
-            # Try alternative pattern
+        # Find instance mask - use exact pattern from working code
+        seg_pattern = f"sub-{study_id}_mod-T2w_seg-vert_msk.nii.gz"
+        instance_file = derivatives_dir / seg_pattern
+        
+        if not instance_file.exists():
+            # Fallback: find any vert mask file
             instance_files = list(derivatives_dir.glob("*_seg-vert_msk.nii.gz"))
+            if not instance_files:
+                print(f"  ✗ Instance mask not found")
+                print(f"    Looking for: {seg_pattern}")
+                print(f"    Available files:")
+                for f in derivatives_dir.glob("*.nii.gz"):
+                    print(f"      - {f.name}")
+                return None
+            instance_file = instance_files[0]
         
-        if not instance_files:
-            print(f"  ✗ Instance mask not found")
-            return None
-
-        instance_file = instance_files[0]
-
-        # Find semantic mask (ribs, TPs, etc)
-        semantic_pattern = f"*{study_id}*_seg-spine_msk.nii.gz"
-        semantic_files = list(derivatives_dir.glob(semantic_pattern))
+        print(f"    Found instance: {instance_file.name}")
         
-        if not semantic_files:
-            # Try alternative pattern
-            semantic_files = list(derivatives_dir.glob("*_seg-spine_msk.nii.gz"))
+        # Find semantic mask (ribs, TPs) - try multiple patterns
+        semantic_patterns = [
+            f"sub-{study_id}_mod-T2w_seg-spine_msk.nii.gz",
+            "*_seg-spine_msk.nii.gz",
+        ]
+        
+        semantic_file = None
+        for pattern in semantic_patterns:
+            if isinstance(pattern, str) and '*' not in pattern:
+                # Exact filename
+                candidate = derivatives_dir / pattern
+                if candidate.exists():
+                    semantic_file = candidate
+                    break
+            else:
+                # Glob pattern
+                matches = list(derivatives_dir.glob(pattern))
+                if matches:
+                    semantic_file = matches[0]
+                    break
+        
+        if semantic_file:
+            print(f"    Found semantic: {semantic_file.name}")
 
-        semantic_file = semantic_files[0] if semantic_files else None
-
-        # Copy outputs to final location
+        # Copy instance mask to output (matching working code)
         instance_output = output_dir / f"{study_id}_instance.nii.gz"
         shutil.copy(instance_file, instance_output)
-
+        
         outputs = {'instance': instance_output}
-
+        
+        # Copy semantic mask if found
         if semantic_file:
             semantic_output = output_dir / f"{study_id}_semantic.nii.gz"
             shutil.copy(semantic_file, semantic_output)
